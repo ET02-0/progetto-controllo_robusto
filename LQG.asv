@@ -1,0 +1,300 @@
+
+%% ==========================================
+%  FASE 2: SINTESI LQG
+%  Plant + Attuatori
+%  (senza ritardo di Padé nella sintesi)
+% ==========================================
+
+disp('==============================================')
+disp(' SINTESI LQG ESTESA')
+disp('==============================================')
+
+
+
+%% -------------------------------------------------
+% 2) Modello attuatori
+%    secondo ordine wn=30 rad/s zeta=0.7
+% --------------------------------------------------
+
+[A_act,B_act,C_act,D_act] = ssdata(G_act_2nd);
+
+Actuator = ss(A_act,B_act,C_act,D_act);
+
+% due attuatori indipendenti
+Actuators_MIMO = blkdiag(Actuator,Actuator);
+
+
+%% -------------------------------------------------
+% 3) Connessione:
+%
+%       u
+%       |
+%       v
+%   Attuatori
+%       |
+%       v
+%   Elicottero
+%       |
+%       v
+%       y
+%
+% --------------------------------------------------
+
+P_sintesi = P_nom*Actuators_MIMO;
+
+
+[A_ext,B_ext,C_ext,D_ext]=ssdata(P_sintesi);
+
+M = [A_ext B_ext;
+     -C_ext zeros(2)];
+
+disp(rank(M))
+disp(size(M,1))
+tzero(P_sintesi)
+
+n_ext = size(A_ext,1);
+m     = size(B_ext,2);
+p     = size(C_ext,1);
+
+
+disp('Dimensioni modello esteso:')
+fprintf('Stati   = %d\n',n_ext)
+fprintf('Ingressi= %d\n',m)
+fprintf('Uscite  = %d\n',p)
+
+
+if n_ext ~= 8
+    error('Errore: il modello esteso non ha 8 stati.')
+end
+
+
+
+%% -------------------------------------------------
+% 4) Analisi modello esteso
+% --------------------------------------------------
+
+disp('Poli modello esteso:')
+disp(eig(A_ext))
+
+
+figure
+pzmap(P_sintesi)
+grid on
+title('Poli modello esteso')
+
+%% Controllabilità modello esteso
+
+rank_ctrb = rank(ctrb(A_ext,B_ext));
+
+fprintf('\nControllabilita LQG: %d/%d\n',...
+    rank_ctrb,n_ext);
+
+
+rank_obs = rank(obsv(A_ext,C_ext));
+
+fprintf('Osservabilita LQG: %d/%d\n',...
+    rank_obs,n_ext);
+
+
+%% -------------------------------------------------
+% 8) Pesi LQR (Regola di Bryson + Smorzamento)
+% --------------------------------------------------
+% Stato x = [alpha, alpha_dot, beta, beta_dot, x_act1, x_act1_dot, x_act2, x_act2_dot]
+
+%% Esempio di tuning per smorzare le oscillazioni nel regolatore a 8 stati
+Q_heli = diag([150, 40, 150, 40]);
+
+Q_act = diag([1; 0.1; 1; 0.1]); % Pesi bassi per gli attuatori
+
+Q_lqr = blkdiag(Q_heli, Q_act);
+R_lqr = 1.0 * eye(2);
+
+%% -------------------------------------------------
+% 9) Calcolo LQR
+% --------------------------------------------------
+
+K_lqr = lqr(A_ext,B_ext,Q_lqr,R_lqr);
+umax = 5; % esempio Nm
+
+disp('Guadagni LQR')
+disp(K_lqr)
+
+
+Acl = A_ext-B_ext*K_lqr;
+
+disp('Poli sistema chiuso LQR:')
+disp(eig(Acl))
+
+
+
+disp('Guadagno LQR calcolato')
+
+
+
+%% -------------------------------------------------
+% 10) Filtro di Kalman
+% --------------------------------------------------
+
+% Assumiamo che il rumore di processo entri come disturbo di attuazione (vento)
+% Rumore di processo modellato come disturbo sugli ingressi
+% (variazioni di spinta, dinamica non modellata degli attuatori)
+Gk = B_ext;
+
+Qn=0.01 * eye(2);
+Rn=0.002 * eye(2);
+
+Estimator = ss(...
+    A_ext,...
+    Gk,...
+    C_ext,...
+    zeros(p,m));
+
+
+[~,Ke,~] = kalman(Estimator,Qn,Rn);
+
+
+
+disp('Filtro Kalman calcolato')
+
+
+
+%% ==========================================
+% Costruzione controllore LQG 
+% ==========================================
+
+
+Ac_ctrl = A_ext-B_ext*K_lqr-Ke*C_ext;
+
+
+Bc_ctrl = -Ke;
+
+
+Cc_ctrl = -K_lqr;
+
+
+Dc_ctrl = zeros(m,p);
+
+
+K_lqg = ss(...
+    Ac_ctrl,...
+    Bc_ctrl,...
+    Cc_ctrl,...
+    Dc_ctrl);
+
+
+
+K_lqg.InputName = {
+    'alpha'
+    'beta'
+};
+
+
+K_lqg.OutputName = {
+    'u1'
+    'u2'
+};
+
+% Guadagno statico riferimento -> uscita
+Kr = -inv(C_ext*(Acl\B_ext));
+
+disp('Precompensatore Kr:')
+disp(Kr)
+
+
+disp('Controllore LQG creato')
+
+%% ==========================================
+% Connessione LQG regolatore
+% ==========================================
+
+
+%% Connessione nominale
+P_full_nom.InputName = {'u1','u2'};
+P_full_nom.OutputName = {'alpha','beta'};
+
+K_lqg.InputName = {'alpha','beta'};
+K_lqg.OutputName = {'u1','u2'};
+
+CL_nom = feedback(P_full_nom*K_lqg,eye(2));
+
+disp('==============================================')
+disp(' ANALISI STABILITA')
+disp('==============================================')
+
+% Poli sistema chiuso nominale
+poli_CL = pole(CL_nom);
+
+disp('Poli closed-loop:')
+disp(poli_CL)
+
+
+if all(real(poli_CL)<0)
+    disp('Sistema nominale stabile')
+else
+    disp('ATTENZIONE: sistema nominale INSTABILE')
+end
+
+
+% Margine di stabilità classico
+figure
+pzmap(CL_nom)
+grid on
+title('Poli Closed Loop LQG')
+
+
+% Risposta al gradino
+figure
+step(CL_nom)
+
+grid on
+title('Risposta LQG nominale')
+
+P_full_unc.InputName = {'u1','u2'};
+P_full_unc.OutputName = {'alpha','beta'};
+
+CL_unc = feedback(P_full_unc*K_lqg,eye(2));
+%% ==========================================
+% Analisi robustezza
+% ==========================================
+
+disp('==============================================')
+disp(' ANALISI ROBUSTEZZA')
+disp('==============================================')
+
+
+% Robust stability margin
+stab_margin = robuststab(CL_unc);
+
+disp('Margine robustezza:')
+disp(stab_margin)
+
+
+% Diagramma valori singolari
+omega = logspace(-2,3,500);
+
+figure
+sigma(CL_unc,omega)
+grid on
+title('Singular Values Closed Loop incerto')
+
+%% Robust performance
+%% Analisi prestazioni
+
+S = stepinfo(CL_nom);
+
+disp('Tempo di assestamento alpha/beta:')
+disp(S(1).SettlingTime)
+disp(S(2).SettlingTime)
+
+disp('Overshoot alpha/beta:')
+disp(S(1).Overshoot)
+disp(S(2).Overshoot)
+
+% 1. Creo l'oggetto opzioni per l'analisi Worst-Case e forzo l'algoritmo 'a' (Advanced)
+opt = wcOptions('MussvOptions', 'a');
+
+% 2. Calcolo il Worst-Case Gain passando le opzioni
+[wcg, wcu] = wcgain(CL_unc, opt);
+
+disp('Worst-case gain (Algoritmo Avanzato):')
+disp(wcg)

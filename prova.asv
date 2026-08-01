@@ -1,0 +1,80 @@
+size(Ke)
+Ke
+eig(A_ext-Ke*C_ext)
+eig(A_ext+Ke*C_ext)
+
+Kr
+K_lqr
+eig(Acl)
+
+Nbar = -inv(C_ext*((A_ext-B_ext*K_lqr)\B_ext));
+Kr
+Nbar
+
+C_ext
+
+Acl_ref = A_ext - B_ext*K_lqr;
+
+Bcl_ref = B_ext*Kr;
+
+Ccl_ref = C_ext;
+
+Dcl_ref = zeros(2);
+
+CL_ref = ss(Acl_ref,Bcl_ref,Ccl_ref,Dcl_ref);
+
+dcgain(CL_ref)
+
+r = [0.1;0];
+
+y_ss = dcgain(CL_ref)*r
+
+A_lqg_ref = [
+    A_ext              -B_ext*K_lqr;
+    zeros(size(A_ext)) A_ext-B_ext*K_lqr-Ke*C_ext
+];
+
+B_lqg_ref = [
+    B_ext*Kr;
+    B_ext*Kr
+];
+
+C_lqg_ref = [
+    C_ext zeros(size(C_ext))
+];
+
+D_lqg_ref = zeros(2);
+
+CL_LQG_ref = ss(A_lqg_ref,B_lqg_ref,C_lqg_ref,D_lqg_ref);
+
+dcgain(CL_LQG_ref)
+
+T_lqg = feedback(P_sintesi*K_lqg,eye(2));
+
+dcgain(T_lqg)
+
+dcgain(CL_nom)
+
+CL_sample = usample(CL_unc,100);
+
+dc = zeros(2,2,100);
+
+for k=1:100
+    dc(:,:,k)=dcgain(CL_sample(:,:,k));
+end
+
+disp('Range guadagno DC:')
+disp(min(dc,[],3))
+disp(max(dc,[],3))
+disp('Range guadagno DC:')
+
+CL_sample = usample(CL_unc,100);
+
+dc = zeros(2,2,100);
+
+for k=1:100
+    dc(:,:,k)=dcgain(CL_sample(:,:,k));
+end
+
+disp(min(dc,[],3))
+disp(max(dc,[],3))

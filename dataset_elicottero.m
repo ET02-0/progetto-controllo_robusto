@@ -288,7 +288,7 @@ rank(ctrb(A_nom,B_nom))
 rank(obsv(A_nom,Cy))
 
 % Inclusione della dinamica incerta degli attuatori (Utile per analisi successive)
-P_full_nom = P_nom*blkdiag(G_act_nom,G_act_nom);
+P_full_nom = P_nom*blkdiag(G_act_2nd,G_act_2nd);
 
 P_full_unc = P_unc*blkdiag(G_actuator_unc,G_actuator_unc);
 P_full_unc.Uncertainty

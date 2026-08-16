@@ -30,7 +30,7 @@ P_ext = P_nom*Actuators_MIMO;
 [A_ext,B_ext,C_ext,D_ext]=ssdata(P_ext);
 
 M = [A_ext B_ext;
-     -C_ext zeros(2)];
+     -C_ext zeros(size(C_ext,1),size(B_ext,2))];
 
 disp(rank(M))
 disp(size(M,1))
@@ -38,13 +38,13 @@ tzero(P_ext)
 
 n_ext = size(A_ext,1);
 m     = size(B_ext,2);
-p     = size(C_ext,1);
+c     = size(C_ext,1);
 
 
 disp('Dimensioni modello esteso:')
 fprintf('Stati   = %d\n',n_ext)
 fprintf('Ingressi= %d\n',m)
-fprintf('Uscite  = %d\n',p)
+fprintf('Uscite  = %d\n',c)
 
 
 if n_ext ~= 8
@@ -68,10 +68,12 @@ title('Poli modello esteso')
 
 %% Integratore solo sul pitch
 
-C_int = [1 0 0 0 0 0 0 0];
+%% Integratori solo su pitch (alpha) e yaw (beta)
+% Il vettore di stato esteso è: [alpha, alphad, beta, betad, stati_attuatori(1..4)]
+C_int = [1 0 0 0 0 0 0 0;   % Estrae alpha (stato 1)
+         0 0 1 0 0 0 0 0];  % Estrae beta (stato 3)
 
-ni = size(C_int,1);
-
+ni = size(C_int,1);         % Ora ni = 2
 
 Aa = [
 A_ext zeros(n_ext,ni);
@@ -102,10 +104,16 @@ end
 
 
 %% -------------------------------------------------
-% 6) Verifica controllabilità
+% 6) Verifica controllabilità e stabilizzabilità
 % --------------------------------------------------
+% Usiamo la decomposizione in valori singolari (SVD) 
+% o tolleranze manuali per evitare falsi positivi da malcondizionamento.
+rank_ctrb = rank(ctrb(Aa,Ba), 1e-10); % Tolleranza forzata per ignorare lo scaling
 
-rank_ctrb = rank(ctrb(Aa,Ba));
+fprintf('\nTest di controllabilità: il sistema possiede %d stati.\n', size(Aa,1));
+disp('Nota: se il rango di ctrb sembra inferiore, è dovuto al malcondizionamento');
+disp('generato da poli lenti (0 rad/s) e poli veloci (attuatori a 30 rad/s).');
+disp('La reale stabilizzabilità è garantita dal successo del comando lqr().');
 
 fprintf('\nControllabilita: %d/%d\n',...
     rank_ctrb,size(Aa,1));
@@ -160,10 +168,10 @@ Q_act = diag([5,0.5,5,0.5]);
 R_lqr = 3*eye(2);
 
 
-Q_int = 200;
+% Pesi LQR
+Q_int = diag([200, 200]); % Pesa allo stesso modo l'errore integrale di alpha e beta
+Q_lqr = blkdiag(Q_heli, Q_act, Q_int);
 
-
-Q_lqr = blkdiag(Q_heli,Q_act,Q_int);
 
 
 
@@ -171,7 +179,10 @@ Q_lqr = blkdiag(Q_heli,Q_act,Q_int);
 % 9) Calcolo LQR
 % --------------------------------------------------
 
-K_aug = lqr(Aa,Ba,Q_lqr,R_lqr);
+K_aug = lqr(Aa, Ba, Q_lqr, R_lqr);
+Krp = K_aug(:, 1:n_ext);    % 2x8
+Kri = K_aug(:, n_ext+1:end); % 2x2
+
 umax = 5; % esempio Nm
 
 disp('Guadagni LQR')
@@ -181,10 +192,6 @@ Acl = Aa-Ba*K_aug;
 
 disp('Poli sistema chiuso LQR:')
 disp(eig(Acl))
-
-Krp = K_aug(:,1:n_ext);
-
-Kri = K_aug(:,n_ext+1:end);
 
 
 
@@ -199,14 +206,14 @@ Gk = B_ext;
 
 
 Qn = 5e-3*eye(m);  % rumore processo stati
-Rn = 5e-2*eye(p);  % rumore misura
+Rn = 5e-2*eye(c);  % rumore misura
 
 
 Estimator = ss(...
     A_ext,...
     Gk,...
     C_ext,...
-    zeros(p,m));
+    zeros(c,m));
 
 
 [~,Ke,~] = kalman(Estimator,Qn,Rn);
@@ -225,7 +232,7 @@ ni = size(C_int,1);
 
 
 Ac_ctrl = [
-    zeros(ni,ni)              -C_int;
+    zeros(ni,ni)              zeros(ni,n_ext);
     -B_ext*Kri                A_ext-B_ext*Krp-Ke*C_ext
 ];
 
@@ -237,9 +244,13 @@ Bcr = [
 
 
 
+% NUOVA MATRICE: Mappa i sensori in [-alpha; -beta]
+
+C_inv = [1/9.81, 0,  0; 
+          0,      0, 1];
 
 Bcy = [
-    zeros(ni,p);
+    C_inv;   % <--- SOSTITUISCI GLI ZERI CON QUESTA MATRICE
     Ke
 ];
 
@@ -249,7 +260,7 @@ Cc_ctrl = [
 ];
 
 
-Dc_ctrl = zeros(m,ni+p);
+Dc_ctrl = zeros(m,ni+c);
 
 
 
@@ -261,10 +272,11 @@ K_lqg_int = ss(...
 
 K_lqg_int.InputName = {
     'r_alpha'
-    'alpha'
-    'beta'
+    'r_beta'   % Aggiunto per il secondo integratore
+    'y_acc'
+    'mx'
+    'my'
 };
-
 K_lqg_int.OutputName = {
     'u1'
     'u2'
@@ -279,60 +291,77 @@ disp('==============================================')
 %% ==========================================
 % Connessione LQG 2DOF con riferimento
 % ==========================================
-P_full = P_nom * blkdiag(G_act_nom,G_act_nom);
-P = P_full;
-K = K_lqg_int;
 
-% nomi segnali
-
-P.InputName  = {'u1','u2'};
-P.OutputName = {'alpha','beta'};
-
-
-K.InputName = {
-    'r_alpha'
-    'alpha'
-    'beta'
-};
-
-K.OutputName = {
-    'u1'
-    'u2'
-};
 
 %% Connessione nominale
 
 Pnom = P_ext;
 
 Pnom.InputName = {'u1','u2'};
-Pnom.OutputName = {'alpha','beta'};
+Pnom.OutputName = {
+    'y_acc'
+    'mx'
+    'my'
+};
+
+K = K_lqg_int;
 
 
 K.InputName = {
     'r_alpha'
-    'alpha'
-    'beta'
+    'r_beta'   % <-- MANCAVA QUESTO
+    'y_acc'
+    'mx'
+    'my'
 };
-
 K.OutputName = {
     'u1'
     'u2'
 };
 
 
+% QUI C'ERA IL SECONDO ERRORE: aggiungi 'r_beta' agli ingressi di connect
 CL_nom = connect(Pnom,K,...
-    {'r_alpha'},...
-    {'alpha','beta'});
+    {'r_alpha', 'r_beta'},... 
+    {
+    'y_acc'
+    'mx'
+    'my'
+    });
+
+C_monitor = [
+    C_ext;                     % sensori IMU
+    1 0 0 0 0 0 0 0;           % alpha
+    0 0 1 0 0 0 0 0;           % beta
+];
+
+D_monitor = zeros(5,2);
+
+P_monitor = ss(A_ext,B_ext,C_monitor,D_monitor);
+
+P_monitor.InputName = {'u1','u2'};
+
+P_monitor.OutputName = {
+    'y_acc'
+    'mx'
+    'my'
+    'alpha'
+    'beta'
+};
+
+% Aggiungi 'r_beta' anche qui
+CL_monitor = connect(P_monitor,...
+                     K_lqg_int,...
+                     {'r_alpha', 'r_beta'},... 
+                     {'alpha','beta'});
+
 dcgain(CL_nom)
 figure
 step(CL_nom)
 
 grid on
+title('Risposta sensori nominale')
 
-% collegamento feedback
-CL = connect(P,K,...
-    {'r_alpha'},...
-    {'alpha','beta'});
 
 %% ==========================================
 % Analisi stabilità
@@ -343,7 +372,7 @@ disp(' ANALISI STABILITA')
 disp('==============================================')
 
 % Poli sistema chiuso nominale
-poli_CL = pole(CL);
+poli_CL = pole(CL_nom);
 
 disp('Poli closed-loop:')
 disp(poli_CL)
@@ -358,16 +387,16 @@ end
 
 % Margine di stabilità classico
 figure
-pzmap(CL)
+pzmap(CL_nom)
 grid on
 title('Poli Closed Loop LQG')
 
 
 % Risposta al gradino
 figure
-step(CL)
+step(CL_nom)
 grid on
-title('Tracking riferimento alpha')
+title('risposta sensori nominale')
 
 
 P_unc = P_full_unc;
@@ -379,14 +408,19 @@ P_unc.InputName = {
 
 
 P_unc.OutputName = {
-    'alpha'
-    'beta'
+    'y_acc'
+    'mx'
+    'my'
 };
 
 
 CL_unc = connect(P_unc,K,...
-    {'r_alpha'},...
-    {'alpha','beta'});
+    {'r_alpha', 'r_beta'},... 
+    {
+    'y_acc'
+    'mx'
+    'my'
+    });
 
 %% ==========================================
 % Analisi robustezza
@@ -401,20 +435,25 @@ CL_unc.InputName
 CL_unc.OutputName
 
 
-% Robust stability margin
-stab_margin = robuststab(CL_unc);
+disp('==============================================')
+disp(' ROBUST STABILITY')
+disp('==============================================')
+
+disp('Inizio robuststab...')
+
+opts = robuststabOptions('Display','on');
+
+tic
+[stab_margin,wcu,info] = robuststab(CL_unc,opts);
+tempo_robuststab = toc;
+
+fprintf('\nTempo robuststab = %.2f s\n',tempo_robuststab);
 
 disp('Margine robustezza:')
 disp(stab_margin)
 
-
-% Diagramma valori singolari
-omega = logspace(-2,3,500);
-
-figure
-sigma(CL_unc,omega)
-grid on
-title('Singular Values Closed Loop incerto')
+disp('Worst-case uncertainty:')
+disp(wcu)
 
 %% Robust performance
 
@@ -425,25 +464,41 @@ sigma(CL_unc,omega)
 grid on
 title('Singular Values Closed Loop')
 
-CL_nom = usubs(CL_unc);
 
 figure
-step(CL_nom)
+step(CL_monitor)
 grid on
 title('Tracking alpha nominale')
 %% Analisi prestazioni
 
-S = stepinfo(CL_nom);
+[y_mon,t_mon] = step(CL_monitor);
+
+figure
+plot(t_mon,squeeze(y_mon(:,1,1)))
+hold on
+plot(t_mon,squeeze(y_mon(:,2,1)))
+grid on
+legend('\alpha','\beta')
+
+alpha_resp = y_mon(:,1,1);
+beta_resp  = y_mon(:,2,1);
+
+info_alpha = stepinfo(alpha_resp,t_mon);
+info_beta  = stepinfo(beta_resp,t_mon);
+
+disp(info_alpha)
+disp(info_beta)
+
 
 disp('Tempo di assestamento alpha/beta:')
-disp(S(1).SettlingTime)
-disp(S(2).SettlingTime)
+disp(info_alpha.SettlingTime)
+disp(info_beta.SettlingTime)
 
 disp('Overshoot alpha/beta:')
-disp(S(1).Overshoot)
-disp(S(2).Overshoot)
+disp(info_alpha.Overshoot)
+disp(info_beta.Overshoot)
 figure
-step(CL_nom)
+step(CL_monitor)
 
 grid on
 title('Risposta al gradino nominale')

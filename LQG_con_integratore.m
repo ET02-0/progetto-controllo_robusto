@@ -155,21 +155,30 @@ end
 %
 % --------------------------------------------------
 
-
+%{
 Q_heli = diag([
 100;   % alpha
-600;   % alpha_dot
+1500;   % alpha_dot
 150;   % beta
-250    % beta_dot
+800    % beta_dot
+]);
+%}
+Q_heli = diag([
+    50;    % alpha (peso posizione)
+    1000;   % alpha_dot (Freno fortissimo sulle vibrazioni pitch)
+    50;    % beta (peso posizione)
+    500     % beta_dot (Freno sulle vibrazioni yaw)
 ]);
 
 Q_act = diag([5,0.5,5,0.5]);
 
-R_lqr = 3*eye(2);
+%R_lqr = 15*eye(2);
+R_lqr = 50*eye(2);
 
 
 % Pesi LQR
-Q_int = diag([200, 200]); % Pesa allo stesso modo l'errore integrale di alpha e beta
+Q_int = diag([5, 5]);
+%Q_int = diag([50, 50]); % Pesa allo stesso modo l'errore integrale di alpha e beta
 Q_lqr = blkdiag(Q_heli, Q_act, Q_int);
 
 
@@ -206,7 +215,11 @@ Gk = B_ext;
 
 
 Qn = 5e-3*eye(m);  % rumore processo stati
-Rn = 5e-2*eye(c);  % rumore misura
+%Rn = 5e-2*eye(c);  % rumore misura
+%Rn = R;
+Rn = [0.25^2   0       0;
+      0        0.1^2   0;
+      0        0       0.5^2];
 
 
 Estimator = ss(...

@@ -6,15 +6,6 @@ clear all; close all; clc;
 disp('Configurazione parametri Elicottero 2DoF (Controllo Robusto)...');
 which uss -all
 
-%% 4. PUNTO DI EQUILIBRIO (Trim Point)
-
-alpha_0 = 0;
-beta_0  = 0;
-
-% Equilibrio orizzontale senza coppie applicate
-F1_0 = 0;
-F2_0 = 0;
-
 %% 1. PARAMETRI NOMINALI (Perfettamente noti)
 p.J_y = 0.00023; 
 p.J_z = 0.00364; 
@@ -24,6 +15,15 @@ p.l_nom = 0.2;
 p.c_alpha = 0.01; 
 p.c_beta = 0.01;
 p.g = 9.81;
+
+%% 2. PUNTO DI EQUILIBRIO (Trim Point)
+
+alpha_0 = deg2rad(5);
+beta_0  = 0;
+
+F1_0 = p.m*p.g*sin(alpha_0)/cos(beta_0);
+F2_0 = 0;
+
 
 %% PARAMETRI NOMINALI PER LQG
 
@@ -175,17 +175,14 @@ C_sym = jacobian(h,x);
 
 Cy = double(subs(C_sym,x,x0));
 
-Dy = zeros(2,2);
+Dy = zeros(3,2);
 %% Rumore sensori IMU
 
-sigma_acc = 0.02;     % [m/s^2]
-sigma_mag = 0.01;     % [-]
-
 R = diag([
-    sigma_acc^2;
-    sigma_mag^2
+0.25^2;
+0.1^2;
+0.1^2
 ]);
-
 
 Bw = [
 0 0;
@@ -202,17 +199,15 @@ B = [B_nom Bw];
 Cz = [
 1 0 0 0;
 0 0 1 0;
-0 0 0 0;
-0 0 0 0
 ];
 
-Dzu = [
-0 0;
-0 0;
-1 0;
-0 1
-];
-Dyu = zeros(2,2);
+Dzu=zeros(2,2);
+
+Dzw=zeros(2,2);
+
+Dyu = zeros(3,2);
+
+Dyw = zeros(size(Cy,1),size(Bw,2));
 
 Cgen = [
 Cz;
@@ -220,8 +215,8 @@ Cy
 ];
 
 Dgen = [
-Dzu zeros(size(Dzu,1),size(Bw,2));
-Dyu zeros(size(Dyu,1),size(Bw,2))
+    Dzu Dzw;
+    Dyu Dyw
 ];
 
 Pgen = ss(A,B,Cgen,Dgen);
@@ -241,7 +236,7 @@ Jbeta_u = Jy_u*sin(alpha_0)^2 + ...
 
 
 % Pitch
-A_unc(2,1) = (-p.m*p.g*l_u*cos(alpha_0))/J_alpha_u;
+A_unc(2,1) = (-m_u*p.g*l_u*cos(alpha_0))/J_alpha_u;
 
 A_unc(2,2) = -p.c_alpha/J_alpha_u;
 
@@ -293,9 +288,18 @@ rank(ctrb(A_nom,B_nom))
 rank(obsv(A_nom,Cy))
 
 % Inclusione della dinamica incerta degli attuatori (Utile per analisi successive)
-P_full_nom = P_nom*blkdiag(G_act_nom,G_act_nom);
+P_full_nom = P_nom*blkdiag(G_act_2nd,G_act_2nd);
 
 P_full_unc = P_unc*blkdiag(G_actuator_unc,G_actuator_unc);
 P_full_unc.Uncertainty
+
+%% Modello incerto esteso con uscite alpha e beta
+
+C_alpha_beta = [
+    1 0 0 0
+    0 0 1 0
+];
+
+D_alpha_beta = zeros(2,2);
 disp('Matrici A e B calcolate. Impianto LTI incerto P_full creato con successo.');
 

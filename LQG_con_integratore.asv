@@ -459,49 +459,29 @@ sigma(CL_unc,omega)
 grid on
 title('Singular Values Closed Loop')
 
+%% Analisi prestazioni
 
-%% Analisi prestazioni: r_alpha = 0.1 rad, r_beta = 0 rad
 
-t = linspace(0,20,2001);
-
-r = zeros(length(t),2);
-r(:,1) = 0.1;     % r_alpha = 0.1 rad
-r(:,2) = 0;       % r_beta  = 0 rad
-
-[y_mon,t_mon] = lsim(CL_monitor,r,t);
-
-alpha_resp = y_mon(:,1);
-beta_resp  = y_mon(:,2);
-
-figure
-plot(t_mon,alpha_resp,'LineWidth',1.5)
-hold on
-plot(t_mon,beta_resp,'LineWidth',1.5)
-grid on
-legend('\alpha','\beta')
-xlabel('Tempo [s]')
-ylabel('Angolo [rad]')
-title('Tracking LQG: r_\alpha = 0.1 rad, r_\beta = 0')
 info_alpha = stepinfo(alpha_resp,t_mon);
+info_beta  = stepinfo(beta_resp,t_mon);
 
 disp(info_alpha)
+disp(info_beta)
 
-disp('Tempo di assestamento alpha:')
+
+disp('Tempo di assestamento alpha/beta:')
 disp(info_alpha.SettlingTime)
+disp(info_beta.SettlingTime)
 
-disp('Overshoot alpha:')
+disp('Overshoot alpha/beta:')
 disp(info_alpha.Overshoot)
+disp(info_beta.Overshoot)
+figure
+step(CL_monitor)
 
-% Per beta il riferimento è zero:
-beta_final = beta_resp(end);
-beta_max = max(abs(beta_resp));
-beta_rms = rms(beta_resp);
-
-fprintf('\nPrestazioni beta (r_beta = 0):\n')
-fprintf('Valore finale beta = %.6g rad\n',beta_final)
-fprintf('Massimo |beta|      = %.6g rad\n',beta_max)
-fprintf('RMS beta            = %.6g rad\n',beta_rms)
-
+grid on
+title('Risposta al gradino nominale')
+legend('alpha','beta','Location','best')
 wcgain(CL_unc)
 
 size(Aa)

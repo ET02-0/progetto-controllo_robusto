@@ -6,15 +6,6 @@ clear all; close all; clc;
 disp('Configurazione parametri Elicottero 2DoF (Controllo Robusto)...');
 which uss -all
 
-%% 4. PUNTO DI EQUILIBRIO (Trim Point)
-
-alpha_0 = 0;
-beta_0  = 0;
-
-% Equilibrio orizzontale senza coppie applicate
-F1_0 = 0;
-F2_0 = 0;
-
 %% 1. PARAMETRI NOMINALI (Perfettamente noti)
 p.J_y = 0.00023; 
 p.J_z = 0.00364; 
@@ -24,6 +15,11 @@ p.l_nom = 0.2;
 p.c_alpha = 0.01; 
 p.c_beta = 0.01;
 p.g = 9.81;
+
+%% 2. PUNTO DI EQUILIBRIO (Trim Point)
+
+alpha_0 = deg2rad(5);
+beta_0  = 0;
 
 %% PARAMETRI NOMINALI PER LQG
 
@@ -35,6 +31,12 @@ tau_d_nom   = 0.02;
 Jbeta_nom = p.J_y*sin(alpha_0)^2 + ...
             (p.J_z+p.m*l_nom^2)*cos(alpha_0)^2 + ...
             p.I_b;
+
+
+F1_0 = p.m*p.g*sin(alpha_0);
+F2_0 = -eps_y_nom * F1_0 * tan(alpha_0);
+
+
 
 
 %% PARAMETRI INCERTI PER ROBUSTEZZA
@@ -236,7 +238,7 @@ Jbeta_u = Jy_u*sin(alpha_0)^2 + ...
 
 
 % Pitch
-A_unc(2,1) = (-p.m*p.g*l_u*cos(alpha_0))/J_alpha_u;
+A_unc(2,1) = (-m_u*p.g*l_u*cos(alpha_0))/J_alpha_u;
 
 A_unc(2,2) = -p.c_alpha/J_alpha_u;
 
@@ -292,5 +294,14 @@ P_full_nom = P_nom*blkdiag(G_act_2nd,G_act_2nd);
 
 P_full_unc = P_unc*blkdiag(G_actuator_unc,G_actuator_unc);
 P_full_unc.Uncertainty
+
+%% Modello incerto esteso con uscite alpha e beta
+
+C_alpha_beta = [
+    1 0 0 0
+    0 0 1 0
+];
+
+D_alpha_beta = zeros(2,2);
 disp('Matrici A e B calcolate. Impianto LTI incerto P_full creato con successo.');
 

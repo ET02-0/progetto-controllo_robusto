@@ -33,24 +33,50 @@ beta_dev_ss = zeros(N_campioni,1);
 T_rec_beta    = zeros(N_campioni,1);
 T_rec_alpha   = zeros(N_campioni,1);
 
+% Metriche sforzo di controllo
+max_u1_cmd = zeros(N_campioni,1);
+max_u2_cmd = zeros(N_campioni,1);
+
+max_u1_sat = zeros(N_campioni,1);
+max_u2_sat = zeros(N_campioni,1);
+
 %% 3. FIGURE
 
 figure('Name','Monte Carlo Simulink LQG');
 
-subplot(2,1,1)
+subplot(3,1,1)
 hold on
 grid on
 title('Tracking \alpha')
 xlabel('Tempo [s]')
 ylabel('\alpha [rad]')
 
-subplot(2,1,2)
+subplot(3,1,2)
 hold on
 grid on
 title('Tracking \beta')
 xlabel('Tempo [s]')
 ylabel('\beta [rad]')
 
+subplot(3,1,3)
+hold on
+grid on
+title('Sforzo di controllo')
+xlabel('Tempo [s]')
+ylabel('u')
+
+%% ==========================================
+% METRICHE
+% ==========================================
+
+% Istante del disturbo
+t_dist = 10;
+
+% Soglie di recupero
+soglia_beta  = 0.07;   % rad
+soglia_alpha = 0.01;   % rad
+
+finestra_rec = 1.0;   % deve rimanere nella fascia per 1 s
 
 %% ==========================================
 % 4. MONTE CARLO
@@ -88,32 +114,32 @@ for i = 1:N_campioni
 
     t = simOut.alpha_LQG_int.Time;
 
+    u_cmd = simOut.u_cmd.Data;
+    u_sat = simOut.u_sat.Data;
+
+    if size(u_cmd,2) ~= 2
+        error('u_cmd deve avere 2 colonne: [u1 u2].');
+    end
+    
+    if size(u_sat,2) ~= 2
+        error('u_sat deve avere 2 colonne: [u1_sat u2_sat].');
+    end
+
 
     %% 4.5 Plot
 
-    subplot(2,1,1)
+    subplot(3,1,1)
     plot(t,alpha_resp)
-
-    subplot(2,1,2)
+    
+    subplot(3,1,2)
     plot(t,beta_resp)
+    
+    subplot(3,1,3)
+    plot(t,u_cmd(:,1))
+    plot(t,u_cmd(:,2))
 
 
-    %% ==========================================
-    % METRICHE
-    % ==========================================
-    
-    % Istante del disturbo
-    t_dist = 10;
-    
-    % Soglie di recupero
-    soglia_beta  = 0.07;   % rad
-    soglia_alpha = 0.01;   % rad
 
-    finestra_rec = 1.0;   % deve rimanere nella fascia per 1 s
-    %% ==========================================
-    % METRICHE
-    % ==========================================
-    
     % ==========================================
     % 1. Picco assoluto
     % ==========================================
@@ -201,6 +227,16 @@ for i = 1:N_campioni
         T_rec_alpha(i) = t(end)-t_dist;
     end
 
+    %% ==========================================
+    % 6. SFORZO DI CONTROLLO
+    % ==========================================
+    
+    max_u1_cmd(i) = max(abs(u_cmd(:,1)));
+    max_u2_cmd(i) = max(abs(u_cmd(:,2)));
+    
+    max_u1_sat(i) = max(abs(u_sat(:,1)));
+    max_u2_sat(i) = max(abs(u_sat(:,2)));
+
     % ==========================================
     % Stampa campione
     % ==========================================
@@ -212,6 +248,8 @@ for i = 1:N_campioni
     fprintf('   err finale beta  = %.6f rad\n',final_beta(i));
     fprintf('   T recupero beta  = %.3f s\n',T_rec_beta(i));
     fprintf('   T recupero alpha = %.3f s\n',T_rec_alpha(i));
+    fprintf('   max |u1_cmd| = %.6f\n',max_u1_cmd(i));
+    fprintf('   max |u2_cmd| = %.6f\n',max_u2_cmd(i));
 end
 
 
@@ -242,14 +280,37 @@ alpha_nom = simOut_nom.alpha_LQG_int.Data;
 beta_nom  = simOut_nom.beta_LQG_int.Data;
 
 
+u_cmd_nom = simOut_nom.u_cmd.Data;
+u_sat_nom = simOut_nom.u_sat.Data;
+
+if size(u_cmd_nom,2) ~= 2
+    error('u_cmd_nom deve avere 2 colonne: [u1 u2].');
+end
+
+if size(u_sat_nom,2) ~= 2
+    error('u_sat_nom deve avere 2 colonne: [u1_sat u2_sat].');
+end
+
+
+
+
 %% 7. PLOT NOMINALE
 
-subplot(2,1,1)
+subplot(3,1,1)
 plot(t_nom,alpha_nom,'k','LineWidth',2)
+legend('Campioni incerti','Nominale','Location','best')
 
-subplot(2,1,2)
+subplot(3,1,2)
 plot(t_nom,beta_nom,'k','LineWidth',2)
+legend('Campioni incerti','Nominale','Location','best')
 
+subplot(3,1,3)
+plot(t_nom,u_cmd_nom(:,1),'k','LineWidth',2)
+plot(t_nom,u_cmd_nom(:,2),'--k','LineWidth',2)
+
+legend('u_1 campioni','u_2 campioni',...
+       'u_1 nominale','u_2 nominale',...
+       'Location','best')
 
 fprintf('\n============================================\n')
 fprintf('       MONTE CARLO SIMULINK - %d CAMPIONI\n',N_campioni)
@@ -288,7 +349,43 @@ fprintf('Tempo recupero beta worst   = %.3f s (campione %d)\n',...
     max(T_rec_beta),find(T_rec_beta == max(T_rec_beta),1));
 
 
-legend('Campioni incerti','Nominale')
+fprintf('\n--- SFORZO DI CONTROLLO ---\n')
+
+fprintf('Worst max |u1_cmd| = %.6f (campione %d)\n',...
+    max(max_u1_cmd),find(max_u1_cmd == max(max_u1_cmd),1));
+
+fprintf('Worst max |u2_cmd| = %.6f (campione %d)\n',...
+    max(max_u2_cmd),find(max_u2_cmd == max(max_u2_cmd),1));
+
+fprintf('Worst max |u1_sat| = %.6f (campione %d)\n',...
+    max(max_u1_sat),find(max_u1_sat == max(max_u1_sat),1));
+
+fprintf('Worst max |u2_sat| = %.6f (campione %d)\n',...
+    max(max_u2_sat),find(max_u2_sat == max(max_u2_sat),1));
+
+fprintf('\nUtilizzo massimo attuatore:\n')
+fprintf('u1: %.2f %% del limite\n',...
+    100*max(max_u1_cmd)/umax);
+
+fprintf('u2: %.2f %% del limite\n',...
+    100*max(max_u2_cmd)/umax);
+
+n_sat_u1 = sum(max_u1_cmd > umax);
+n_sat_u2 = sum(max_u2_cmd > umax);
+
+fprintf('\nControllo effettiva saturazione:\n');
+
+fprintf('max |u1_cmd| - max |u1_sat| = %.6f\n',...
+    max(max_u1_cmd) - max(max_u1_sat));
+
+fprintf('max |u2_cmd| - max |u2_sat| = %.6f\n',...
+    max(max_u2_cmd) - max(max_u2_sat));
+
+fprintf('\nCampioni con saturazione u1: %d/%d\n',...
+    n_sat_u1,N_campioni);
+
+fprintf('Campioni con saturazione u2: %d/%d\n',...
+    n_sat_u2,N_campioni);
 
 %% ==========================================
 % DISTRIBUZIONE DELLE METRICHE MONTE CARLO
@@ -346,3 +443,33 @@ grid on
 xlabel('Errore finale |\alpha| [rad]')
 ylabel('Numero campioni')
 title('Errore finale \alpha')
+
+figure('Name','Distribuzione sforzo di controllo');
+
+subplot(2,2,1)
+histogram(max_u1_cmd,10)
+grid on
+xlabel('max |u_1|')
+ylabel('Numero campioni')
+title('Picco comando u_1')
+
+subplot(2,2,2)
+histogram(max_u2_cmd,10)
+grid on
+xlabel('max |u_2|')
+ylabel('Numero campioni')
+title('Picco comando u_2')
+
+subplot(2,2,3)
+histogram(max_u1_sat,10)
+grid on
+xlabel('max |u_{1,sat}|')
+ylabel('Numero campioni')
+title('Picco u_1 dopo saturazione')
+
+subplot(2,2,4)
+histogram(max_u2_sat,10)
+grid on
+xlabel('max |u_{2,sat}|')
+ylabel('Numero campioni')
+title('Picco u_2 dopo saturazione')

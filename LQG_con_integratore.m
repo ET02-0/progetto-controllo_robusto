@@ -154,16 +154,17 @@ end
 % x = [elicottero(4); attuatori(4)]
 %
 % --------------------------------------------------
+% 1. Pesi LQR: Approccio morbido per tollerare il ritardo degli attuatori
+Q_heli = diag([1, 0.1, 1, 0.1]); 
+Q_act  = zeros(4,4);             
 
-% 1. LQR: Manteniamo il setup aggressivo ma bilanciato
-Q_heli = diag([2000; 200; 200; 500]); % Posizione alpha a 2000 (enorme), freno quasi nullo (200)
-Q_act  = diag([5, 0.5, 5, 0.5]);
+% Depotenziamento drastico dell'integratore per evitare instabilità col ritardo
+Q_int  = diag([5, 5]);           % Abbassato da 100 a 5
 
-% Integratori: alpha moderato per non tremare, beta forte per il disturbo
-Q_int = diag([800, 400]);
-Q_lqr = blkdiag(Q_heli, Q_act, Q_int);
+Q_lqr  = blkdiag(Q_heli, Q_act, Q_int);
 
-R_lqr = diag([0.05, 0.15]); % Valori abbassati (prima erano 0.5, 1.5)
+% Sforzo di controllo fortemente penalizzato per non "stressare" i rotori lenti
+R_lqr  = diag([20, 20]);         % Alzato da 1 a 20
 
 %% -------------------------------------------------
 % 9) Calcolo LQR
@@ -195,10 +196,8 @@ disp('Guadagno LQR calcolato')
 Gk = B_ext;
 
 % 2. Kalman: Filtriamo pesantemente i sensori per assorbire i colpi
-Qn = diag([1e-3, 1e-2]);
-Rn = [0.25^2 0 0; 
-      0 0.1^2 0; 
-      0 0 0.5^2];
+Qn = 1e-4 * eye(2);
+Rn = 1e-3*eye(3);
 Estimator = ss(...
     A_ext,...
     Gk,...

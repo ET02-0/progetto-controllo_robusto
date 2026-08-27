@@ -45,6 +45,10 @@ P_sintesi = P_nom*Actuators_MIMO;
 
 [A_ext,B_ext,C_ext,D_ext]=ssdata(P_sintesi);
 
+n_ext = size(A_ext,1);
+m     = size(B_ext,2);
+p     = size(C_ext,1);
+
 M = [A_ext B_ext;
      -C_ext  zeros(p,m)];
 
@@ -52,9 +56,7 @@ disp(rank(M))
 disp(size(M,1))
 tzero(P_sintesi)
 
-n_ext = size(A_ext,1);
-m     = size(B_ext,2);
-p     = size(C_ext,1);
+
 
 
 disp('Dimensioni modello esteso:')
@@ -355,41 +357,81 @@ plot(t_angle,y_angle(:,2,2))
 grid on
 title('\beta / r_\beta')
 
-%% Metriche tracking diagonali
+%{
+%% ==========================================
+% TEST DI PROGETTO
+% r_alpha = 0.1 rad
+% r_beta  = 0 rad
+% ==========================================
 
-info_aa = stepinfo(y_angle(:,1,1),t_angle);
-info_bb = stepinfo(y_angle(:,2,2),t_angle);
+t = linspace(0,20,2001);
 
-disp('Overshoot alpha tracking:')
-disp(info_aa.Overshoot)
+r = zeros(length(t),2);
+r(:,1) = 0.1;
+r(:,2) = 0;
 
-disp('Overshoot beta tracking:')
-disp(info_bb.Overshoot)
+[y_lsim,t_lsim] = lsim(CL_monitor,r,t);
 
-disp('Guadagno statico alpha-alpha')
-disp(y_angle(end,1,1))
+alpha_resp = y_lsim(:,1);
+beta_resp  = y_lsim(:,2);
 
-disp('Guadagno statico beta-beta')
-disp(y_angle(end,2,2))
+figure
+plot(t_lsim,alpha_resp,'LineWidth',1.5)
+hold on
+plot(t_lsim,beta_resp,'LineWidth',1.5)
+grid on
+xlabel('Tempo [s]')
+ylabel('Angolo [rad]')
+legend('\alpha','\beta','Location','best')
+title('LQG 2DOF senza integratore - r_\alpha=0.1 rad, r_\beta=0')
 
-disp('Accoppiamento alpha-beta')
-disp(y_angle(end,1,2))
+%% Metriche del caso di progetto
 
-disp('Accoppiamento beta-alpha')
-disp(y_angle(end,2,1))
+info_alpha = stepinfo(alpha_resp,t_lsim);
 
-disp('Settling time alpha:')
-disp(info_aa.SettlingTime)
+fprintf('\n==============================================\n')
+fprintf(' PRESTAZIONI LQG SENZA INTEGRATORE\n')
+fprintf('==============================================\n')
 
-disp('Settling time beta:')
-disp(info_bb.SettlingTime)
+fprintf('Overshoot alpha      = %.4f %%\n',...
+    info_alpha.Overshoot);
 
+fprintf('Settling time alpha  = %.4f s\n',...
+    info_alpha.SettlingTime);
 
-disp('Rise time alpha:')
-disp(info_aa.RiseTime)
+fprintf('Rise time alpha      = %.4f s\n',...
+    info_alpha.RiseTime);
 
-disp('Rise time beta:')
-disp(info_bb.RiseTime)
+fprintf('Errore finale alpha  = %.6f rad\n',...
+    abs(alpha_resp(end)-0.1));
+
+fprintf('Picco |alpha|        = %.6f rad\n',...
+    max(abs(alpha_resp)));
+
+fprintf('Picco |beta|         = %.6f rad\n',...
+    max(abs(beta_resp)));
+
+fprintf('RMS beta             = %.6f rad\n',...
+    rms(beta_resp));
+
+fprintf('Errore finale beta   = %.6f rad\n',...
+    abs(beta_resp(end)));
+
+%}
+
+gain_aa = dcgain(CL_monitor(1,1));
+gain_bb = dcgain(CL_monitor(2,2));
+gain_ab = dcgain(CL_monitor(1,2));
+gain_ba = dcgain(CL_monitor(2,1));
+
+fprintf('\nGuadagni statici:\n')
+fprintf('Gaa = %.6f\n',gain_aa)
+fprintf('Gbb = %.6f\n',gain_bb)
+fprintf('Gab = %.6e\n',gain_ab)
+fprintf('Gba = %.6e\n',gain_ba)
+
+fprintf('Errore statico alpha = %.6f %%\n',100*abs(1-gain_aa))
+fprintf('Errore statico beta  = %.6f %%\n',100*abs(1-gain_bb))
 
 % 1. Creo l'oggetto opzioni per l'analisi Worst-Case e forzo l'algoritmo 'a' (Advanced)
 opt = wcOptions('MussvOptions', 'a');

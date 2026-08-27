@@ -18,7 +18,7 @@ p.g = 9.81;
 
 %% 2. PUNTO DI EQUILIBRIO (Trim Point)
 
-alpha_0 = deg2rad(5);
+alpha_0 = deg2rad(10);
 beta_0  = 0;
 
 %% PARAMETRI NOMINALI PER LQG
@@ -32,10 +32,22 @@ Jbeta_nom = p.J_y*sin(alpha_0)^2 + ...
             (p.J_z+p.m*l_nom^2)*cos(alpha_0)^2 + ...
             p.I_b;
 
+% Allineamento nomi per la MATLAB Function di Simulink
+p.l = p.l_nom;
+p.eps_p = eps_p_nom;
+p.eps_y = eps_y_nom;
+p.J_alpha = J_alpha_nom;
+
 
 F1_0 = p.m*p.g*sin(alpha_0);
 F2_0 = -eps_y_nom * F1_0 * tan(alpha_0);
 
+% CALCOLO DELLE MISURE DI EQUILIBRIO (TRIM DEI SENSORI)
+y_acc_eq = -p.g * sin(alpha_0);
+mx_eq    = cos(alpha_0) * cos(beta_0);
+my_eq    = -sin(beta_0);
+
+y0 = [y_acc_eq; mx_eq; my_eq]; % Questo è il tuo y_eq
 
 
 

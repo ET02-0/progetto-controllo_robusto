@@ -102,6 +102,7 @@ x = [alpha;
 u = [F1;
      F2];
 
+umax = 5;
 
 %% Inerzia yaw variabile
 

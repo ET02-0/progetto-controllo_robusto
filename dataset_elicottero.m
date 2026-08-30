@@ -21,6 +21,10 @@ p.g = 9.81;
 alpha_0 = deg2rad(10);
 beta_0  = 0;
 
+% --- Condizioni iniziali per i blocchi Integratore di Simulink ---
+q0    = [alpha_0; beta_0]; 
+qdot0 = [0; 0];
+
 %% PARAMETRI NOMINALI PER LQG
 
 J_alpha_nom = 0.012;
@@ -39,9 +43,20 @@ p.eps_y = eps_y_nom;
 p.J_alpha = J_alpha_nom;
 
 
-F1_0 = p.m*p.g*sin(alpha_0);
-F2_0 = -eps_y_nom * F1_0 * tan(alpha_0);
+%% EQUILIBRIO NOMINALE
 
+E0_nom = [
+    cos(beta_0),              eps_p_nom*sin(beta_0);
+    eps_y_nom*sin(alpha_0),   cos(alpha_0)
+];
+
+u0_nom = E0_nom \ [
+    p.m*p.g*sin(alpha_0);
+    0
+];
+
+F1_0 = u0_nom(1);
+F2_0 = u0_nom(2);
 % CALCOLO DELLE MISURE DI EQUILIBRIO (TRIM DEI SENSORI)
 y_acc_eq = -p.g * sin(alpha_0);
 mx_eq    = cos(alpha_0) * cos(beta_0);
@@ -86,6 +101,75 @@ G_act_2nd = tf(num_2nd,den_2nd);
 G_act_nom = G_act_2nd*G_delay_pade_nom;
 G_actuator_unc = G_act_2nd*G_delay_pade_unc;
 
+%% ========================================================================
+% 4. STRUTTURE PER SIMULINK (Attuatori, Sensori, Disturbi, Riferimenti)
+% ========================================================================
+
+% --- ATTUATORI (act) ---
+% Raggruppiamo i parametri dinamici scelti in precedenza (omega_n, zeta, tau_d_nom)
+act.wn1 = omega_n;       
+act.wn2 = omega_n;       
+act.zeta1 = zeta;        
+act.zeta2 = zeta;        
+act.td1 = tau_d_nom;     
+act.td2 = tau_d_nom;     
+
+% Saturazioni fisiche per la validazione della RAS
+% (Centrate in modo da consentire variazioni attorno a F1_0 e F2_0)
+act.deltaF1_min = -0.5;  
+act.deltaF1_max =  2.5;  
+act.deltaF2_min = -2.5;  
+act.deltaF2_max =  2.5;  
+
+% Rumore di attuazione
+act.Ts_noise = 0.01;    % Campionamento del rumore attuatori
+act.sigma_F1 = 0.01;     % [N]
+act.sigma_F2 = 0.01;     % [N]
+act.noisePower_F1 = act.sigma_F1^2 * act.Ts_noise;
+act.noisePower_F2 = act.sigma_F2^2 * act.Ts_noise;
+act.noiseEnable = 1;     % Mettere a 0 per disattivare il rumore attuatori
+
+% --- SENSORI IMU MPU-9250 (sensor) ---
+sensor.seed = 12345;     
+sensor.noiseEnable = 1;  % Mettere a 0 per la valutazione teorica della RAS
+
+% Accelerometro (Campionato ad alta frequenza)
+sensor.acc.fs = 1000;              
+sensor.acc.Ts = 1/sensor.acc.fs;   % dt = 0.001 s
+sensor.acc.sigma = 0.25;           
+sensor.acc.var = sensor.acc.sigma^2; 
+
+% Magnetometro (Campionato a bassa frequenza)
+sensor.mag.fs = 100;               
+sensor.mag.Ts = 1/sensor.mag.fs;   % T_cmag = 0.01 s
+sensor.mag.sigma = 0.1;         
+sensor.mag.var = sensor.mag.sigma^2; 
+
+sensor.acc.noisePower = sensor.acc.sigma^2 * sensor.acc.Ts;
+sensor.mag.noisePower = sensor.mag.sigma^2 * sensor.mag.Ts;
+
+sensor.R = diag([
+    sensor.acc.sigma^2
+    sensor.mag.sigma^2
+    sensor.mag.sigma^2
+]);
+
+% --- DISTURBI AERODINAMICI (aero) ---
+% Come richiesto dalla Traccia 3 per la verifica della reiezione ai disturbi
+aero.enable = 1;                  
+aero.alpha.time      = 10;         % Istante ingresso disturbo su pitch [s]
+aero.alpha.amplitude = 5e-3;      % Ampiezza disturbo [N*m]
+aero.beta.time       = 10;        % Istante ingresso disturbo su yaw [s]
+aero.beta.amplitude  = 2e-3;      % Ampiezza disturbo [N*m]
+
+% --- RIFERIMENTI (ref) ---
+% Impostiamo un test di gradino su alpha mantenendo beta all'equilibrio nominale
+ref.alpha.initial = 0;
+ref.alpha.final   = deg2rad(3);
+ref.alpha.time    = 1;
+ref.beta.initial  = 0;
+ref.beta.final    = 0;
+ref.beta.time     = 1;
 
 %% Stato e ingressi simbolici
 
@@ -236,49 +320,190 @@ Dgen = [
 
 Pgen = ss(A,B,Cgen,Dgen);
 
+%% EQUILIBRIO INCERTO
+
+E0_unc = [
+    cos(beta_0),              eps_p_u*sin(beta_0);
+    eps_y_u*sin(alpha_0),     cos(alpha_0)
+];
+
+u0_unc = E0_unc \ [
+    m_u*p.g*sin(alpha_0);
+    0
+];
+
+F1_0_unc = u0_unc(1);
+F2_0_unc = u0_unc(2);
 
 %% LINEARIZZAZIONE INCERTA
 
-% Creo direttamente matrici uncertain
+Jbeta_u = ...
+    Jy_u*sin(alpha_0)^2 + ...
+    (Jz_u + m_u*l_u^2)*cos(alpha_0)^2 + ...
+    p.I_b;
 
-A_unc = A_nom + 0*J_alpha_u;
-B_unc = B_nom + 0*J_alpha_u;
+% ---------- MATRICE A INCERTA ----------
 
+a21_u = ...
+    -(m_u*p.g*l_u*cos(alpha_0))/J_alpha_u;
 
-Jbeta_u = Jy_u*sin(alpha_0)^2 + ...
-          (Jz_u+m_u*l_u^2)*cos(alpha_0)^2 + ...
-          p.I_b;
+a22_u = ...
+    -p.c_alpha/J_alpha_u;
 
+a23_u = ...
+    l_u*( ...
+    -F1_0_unc*sin(beta_0) + ...
+    eps_p_u*F2_0_unc*cos(beta_0)) / J_alpha_u;
 
-% Pitch
-A_unc(2,1) = (-m_u*p.g*l_u*cos(alpha_0))/J_alpha_u;
+a41_u = ...
+    l_u*( ...
+    -F2_0_unc*sin(alpha_0) + ...
+    eps_y_u*F1_0_unc*cos(alpha_0)) / Jbeta_u;
 
-A_unc(2,2) = -p.c_alpha/J_alpha_u;
+a44_u = ...
+    -p.c_beta/Jbeta_u;
 
+A_unc = [
+    0      1      0      0;
+    a21_u a22_u  a23_u  0;
+    0      0      0      1;
+    a41_u 0      0      a44_u
+];
 
-B_unc(2,1) = l_u*cos(beta_0)/J_alpha_u;
+% ---------- MATRICE B INCERTA ----------
 
-B_unc(2,2) = eps_p_u*l_u*sin(beta_0)/J_alpha_u;
+b21_u = l_u*cos(beta_0)/J_alpha_u;
 
+b22_u = eps_p_u*l_u*sin(beta_0)/J_alpha_u;
 
+b41_u = eps_y_u*l_u*sin(alpha_0)/Jbeta_u;
 
-% Yaw
-A_unc(4,4) = -p.c_beta/Jbeta_u;
+b42_u = l_u*cos(alpha_0)/Jbeta_u;
 
-
-B_unc(4,1) = eps_y_u*l_u*sin(alpha_0)/Jbeta_u;
-
-B_unc(4,2) = l_u*cos(alpha_0)/Jbeta_u;
+B_unc = [
+    0      0;
+    b21_u b22_u;
+    0      0;
+    b41_u b42_u
+];
 %% MODELLO NOMINALE
-
 P_nom = ss(A_nom,B_nom,Cy,Dy);
 
+P_nom.StateName = {
+    'delta_alpha'
+    'delta_alpha_dot'
+    'delta_beta'
+    'delta_beta_dot'
+};
+
+P_nom.InputName = {
+    'delta_F1'
+    'delta_F2'
+};
+
+P_nom.OutputName = {
+    'delta_y_acc'
+    'delta_mx'
+    'delta_my'
+};
+
+%% MODELLO NOMINALE CON DISTURBI AERODINAMICI
+
+Bd_nom = [
+    0                 0;
+    1/J_alpha_nom     0;
+    0                 0;
+    0                 1/Jbeta_nom
+];
+
+B_ext_nom = [B_nom Bd_nom];
+
+P_nom_ext = ss( ...
+    A_nom, ...
+    B_ext_nom, ...
+    Cy, ...
+    zeros(3,4));
+
+P_nom_ext.StateName = P_nom.StateName;
+
+P_nom_ext.InputName = {
+    'delta_F1'
+    'delta_F2'
+    'd_alpha'
+    'd_beta'
+};
+
+P_nom_ext.OutputName = P_nom.OutputName;
 
 
 %% MODELLO INCERTO
-
 P_unc = uss(A_unc,B_unc,Cy,Dy);
-P_unc.Uncertainty
+
+P_unc.StateName = P_nom.StateName;
+P_unc.InputName = P_nom.InputName;
+P_unc.OutputName = P_nom.OutputName;
+
+
+%% DISTURBI AERODINAMICI
+Bd_unc = [
+    0             0;
+    1/J_alpha_u  0;
+    0             0;
+    0             1/Jbeta_u
+];
+
+B_ext_unc = [B_unc Bd_unc];
+
+P_unc_ext = uss( ...
+    A_unc, ...
+    B_ext_unc, ...
+    Cy, ...
+    zeros(3,4));
+
+P_unc_ext.StateName = P_unc.StateName;
+
+P_unc_ext.InputName = {
+    'delta_F1'
+    'delta_F2'
+    'd_alpha'
+    'd_beta'
+};
+
+P_unc_ext.OutputName = {
+    'delta_y_acc'
+    'delta_mx'
+    'delta_my'
+};
+
+
+%% MODELLO INCERTO CON USCITE ANGOLARI
+C_angles = [
+    1 0 0 0;
+    0 0 1 0
+];
+
+P_unc_angles = uss( ...
+    A_unc, ...
+    B_unc, ...
+    C_angles, ...
+    zeros(2,2));
+
+P_unc_angles.StateName = P_unc.StateName;
+
+P_unc_angles.InputName = P_unc.InputName;
+
+P_unc_angles.OutputName = {
+    'delta_alpha'
+    'delta_beta'
+};
+
+
+%% ATTUATORI
+P_full_nom = P_nom*blkdiag(G_act_2nd,G_act_2nd);
+P_full_unc = P_unc*blkdiag(G_actuator_unc,G_actuator_unc);
+
+
+P_full_unc.Uncertainty
 
 disp('Modello nominale:')
 P_nom
@@ -302,19 +527,5 @@ tzero(P_nom)
 rank(ctrb(A_nom,B_nom))
 rank(obsv(A_nom,Cy))
 
-% Inclusione della dinamica incerta degli attuatori (Utile per analisi successive)
-P_full_nom = P_nom*blkdiag(G_act_2nd,G_act_2nd);
-
-P_full_unc = P_unc*blkdiag(G_actuator_unc,G_actuator_unc);
-P_full_unc.Uncertainty
-
-%% Modello incerto esteso con uscite alpha e beta
-
-C_alpha_beta = [
-    1 0 0 0
-    0 0 1 0
-];
-
-D_alpha_beta = zeros(2,2);
 disp('Matrici A e B calcolate. Impianto LTI incerto P_full creato con successo.');
 

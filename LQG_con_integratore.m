@@ -9,10 +9,6 @@ clc
 disp('SINTESI LQG 2DOF CON INTEGRATORE')
 
 
-%% Plant nominale
-
-[A_heli,B_heli,C_ext,D_ext] = ssdata(P_nom);
-
 
 %% Attuatori
 
@@ -66,9 +62,8 @@ pzmap(P_ext)
 grid on
 title('Poli modello esteso')
 
-%% Integratore solo sul pitch
 
-%% Integratori solo su pitch (alpha) e yaw (beta)
+%% Integratori su pitch (alpha) e yaw (beta)
 % Il vettore di stato esteso è: [alpha, alphad, beta, betad, stati_attuatori(1..4)]
 C_int = [1 0 0 0 0 0 0 0;   % Estrae alpha (stato 1)
          0 0 1 0 0 0 0 0];  % Estrae beta (stato 3)
@@ -154,17 +149,16 @@ end
 % x = [elicottero(4); attuatori(4)]
 %
 % --------------------------------------------------
-% 1. Pesi LQR: Approccio morbido per tollerare il ritardo degli attuatori
-Q_heli = diag([1, 0.1, 1, 0.1]); 
-Q_act  = zeros(4,4);             
+% =================================================================
+% 1. Pesi LQR
+% =================================================================
 
-% Depotenziamento drastico dell'integratore per evitare instabilità col ritardo
-Q_int  = diag([5, 5]);           % Abbassato da 100 a 5
+Q_heli = diag([200 20 100 500]);
+Q_act  = diag([5, 0.5, 5, 0.5]);
+Q_int  = diag([150, 150]);
+Q_lqr = blkdiag(Q_heli,Q_act,Q_int);
 
-Q_lqr  = blkdiag(Q_heli, Q_act, Q_int);
-
-% Sforzo di controllo fortemente penalizzato per non "stressare" i rotori lenti
-R_lqr  = diag([20, 20]);         % Alzato da 1 a 20
+R_lqr  = diag([1 1]);
 
 %% -------------------------------------------------
 % 9) Calcolo LQR
@@ -195,19 +189,20 @@ disp('Guadagno LQR calcolato')
 % --------------------------------------------------
 Gk = B_ext;
 
-% 2. Kalman: Filtriamo pesantemente i sensori per assorbire i colpi
-Qn = 1e-4 * eye(2);
-Rn = 1e-3*eye(3);
-Estimator = ss(...
-    A_ext,...
-    Gk,...
-    C_ext,...
-    zeros(c,m));
+W = diag([0.001, 0.001]);
+
+V = sensor.R
+
+Vinv = diag(1./diag(V));
+
+C_angle_meas = C_ext(:,[1 3]);
+
+HalphaBeta = ...
+    (C_angle_meas.'*Vinv*C_angle_meas) \ ...
+    (C_angle_meas.'*Vinv);
 
 
-[~,Ke,~] = kalman(Estimator,Qn,Rn);
-
-
+[Ke,~,~] = lqe(A_ext,Gk,C_ext,W,V);
 
 disp('Filtro Kalman calcolato')
 
@@ -221,10 +216,9 @@ ni = size(C_int,1);
 
 
 Ac_ctrl = [
-    zeros(ni,ni)              zeros(ni,n_ext);
-    -B_ext*Kri                A_ext-B_ext*Krp-Ke*C_ext
+    zeros(ni,ni),              zeros(ni,n_ext);
+    -B_ext*Kri,                A_ext-B_ext*Krp-Ke*C_ext
 ];
-
 
 Bcr = [
     eye(ni);
@@ -233,17 +227,8 @@ Bcr = [
 
 
 
-% NUOVA MATRICE: Mappa i sensori in [-alpha; -beta]
-
-alpha_0 = deg2rad(5);
-
-C_inv = [
-    -1/(9.81*cos(alpha_0)), 0, 0;
-    0,                     0, -1
-];
-
 Bcy = [
-    -C_inv;   % <--- SOSTITUISCI GLI ZERI CON QUESTA MATRICE
+    -HalphaBeta;
     Ke
 ];
 
@@ -252,15 +237,12 @@ Cc_ctrl = [
     -Kri   -Krp
 ];
 
-
 Dc_ctrl = zeros(m,ni+c);
 
-
-
-K_lqg_int = ss(...
-    Ac_ctrl,...
-    [Bcr Bcy],...
-    Cc_ctrl,...
+K_lqg_int = ss( ...
+    Ac_ctrl, ...
+    [Bcr Bcy], ...
+    Cc_ctrl, ...
     Dc_ctrl);
 
 K_lqg_int.InputName = {
@@ -323,9 +305,9 @@ CL_nom = connect(Pnom,K,...
     });
 
 C_monitor = [
-    C_ext;                     % sensori IMU
-    1 0 0 0 0 0 0 0;           % alpha
-    0 0 1 0 0 0 0 0;           % beta
+    C_ext;
+    1 0 0 0 0 0 0 0;
+    0 0 1 0 0 0 0 0
 ];
 
 D_monitor = zeros(5,2);
@@ -334,20 +316,19 @@ P_monitor = ss(A_ext,B_ext,C_monitor,D_monitor);
 
 P_monitor.InputName = {'u1','u2'};
 
-P_monitor.OutputName = {
+P_monitor.OutputName = { 
     'y_acc'
     'mx'
     'my'
-    'alpha'
-    'beta'
+    'delta_alpha'
+    'delta_beta'
 };
 
 % Aggiungi 'r_beta' anche qui
 CL_monitor = connect(P_monitor,...
-                     K_lqg_int,...
-                     {'r_alpha', 'r_beta'},... 
-                     {'alpha','beta'});
-
+                     K_lqg_int,... 
+                     {'r_alpha','r_beta'},...  
+                     {'delta_alpha','delta_beta'});
 dcgain(CL_nom)
 figure
 step(CL_nom)
@@ -392,23 +373,21 @@ grid on
 title('risposta sensori nominale')
 
 
-P_unc = P_full_unc;
+Pfull_unc = P_full_unc;
 
-P_unc.InputName = {
+Pfull_unc.InputName = {
     'u1'
     'u2'
 };
 
-
-P_unc.OutputName = {
+Pfull_unc.OutputName = {
     'y_acc'
     'mx'
     'my'
 };
 
-
-CL_unc = connect(P_unc,K,...
-    {'r_alpha', 'r_beta'},... 
+CL_unc = connect(Pfull_unc,K,...
+    {'r_alpha','r_beta'},...
     {
     'y_acc'
     'mx'
@@ -459,29 +438,29 @@ grid on
 title('Singular Values Closed Loop')
 
 
-%% Analisi prestazioni: r_alpha = 0.1 rad, r_beta = 0 rad
+%% Analisi prestazioni: r_alpha = deg2rad(3) rad, r_beta = 0 rad
 
 t = linspace(0,20,2001);
 
 r = zeros(length(t),2);
-r(:,1) = 0.1;     % r_alpha = 0.1 rad
-r(:,2) = 0;       % r_beta  = 0 rad
+r(:,1) = deg2rad(3);     % r_alpha = deg2rad(3) rad
+r(:,2) = 0;              % r_beta  = 0 rad
 
 [y_mon,t_mon] = lsim(CL_monitor,r,t);
 
-alpha_resp = y_mon(:,1);
-beta_resp  = y_mon(:,2);
+delta_alpha_resp = y_mon(:,1);
+delta_beta_resp  = y_mon(:,2);
 
 figure
-plot(t_mon,alpha_resp,'LineWidth',1.5)
+plot(t_mon,delta_alpha_resp,'LineWidth',1.5)
 hold on
-plot(t_mon,beta_resp,'LineWidth',1.5)
+plot(t_mon,delta_beta_resp,'LineWidth',1.5)
 grid on
 legend('\alpha','\beta')
 xlabel('Tempo [s]')
 ylabel('Angolo [rad]')
-title('Tracking LQG: r_\alpha = 0.1 rad, r_\beta = 0')
-info_alpha = stepinfo(alpha_resp,t_mon);
+title('Tracking LQG: r_\alpha = deg2rad(3) rad, r_\beta = 0')
+info_alpha = stepinfo(delta_alpha_resp,t_mon);
 
 disp(info_alpha)
 
@@ -492,9 +471,9 @@ disp('Overshoot alpha:')
 disp(info_alpha.Overshoot)
 
 % Per beta il riferimento è zero:
-beta_final = beta_resp(end);
-beta_max = max(abs(beta_resp));
-beta_rms = rms(beta_resp);
+beta_final = delta_beta_resp(end);
+beta_max = max(abs(delta_beta_resp));
+beta_rms = rms(delta_beta_resp);
 
 fprintf('\nPrestazioni beta (r_beta = 0):\n')
 fprintf('Valore finale beta = %.6g rad\n',beta_final)

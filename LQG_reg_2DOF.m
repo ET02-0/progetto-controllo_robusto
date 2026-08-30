@@ -110,19 +110,19 @@ fprintf('Osservabilita LQG: %d/%d\n',...
 
 %% Tuning più smorzato
 
-Q_heli = diag([150,350,150,250]);
+Q_heli = diag([200, 20, 800, 500]);
 
-Q_act = diag([5,0.5,5,0.5]);
+Q_act = diag([5, 0.5, 5, 0.5]);
 
-Q_lqr = blkdiag(Q_heli,Q_act);
+Q_lqr = blkdiag(Q_heli, Q_act);
 
-R_lqr = 3*eye(2);
+R_lqr = diag([1 1]);
 %% -------------------------------------------------
 % 9) Calcolo LQR
 % --------------------------------------------------
 
 K_lqr = lqr(A_ext,B_ext,Q_lqr,R_lqr);
-umax = 5; % esempio Nm
+
 
 disp('Guadagni LQR')
 disp(K_lqr)
@@ -143,13 +143,18 @@ disp('Guadagno LQR calcolato')
 % 10) Filtro di Kalman
 % --------------------------------------------------
 
-% Assumiamo che il rumore di processo entri come disturbo di attuazione (vento)
-% Rumore di processo modellato come disturbo sugli ingressi
-% (variazioni di spinta, dinamica non modellata degli attuatori)
+
 Gk = B_ext;
 
-Qn = 5e-3*eye(m);
-Rn = R;
+W = diag([
+    0.001
+    0.001
+]);
+
+V = sensor.R;
+
+Qn = W;
+Rn = V;
 
 Estimator = ss(...
     A_ext,...
@@ -235,6 +240,126 @@ CL_monitor = connect(P_monitor,...
                      {'r_alpha','r_beta'},...
                      {'alpha','beta'});
 CL_monitor.OutputName
+
+%% ==========================================
+% ANALISI REIEZIONE DISTURBO
+% Trasferimento d_beta -> delta_beta
+% LQG 2-DOF senza integratore
+% ==========================================
+
+% Gli attuatori sono già inclusi in A_ext/B_ext.
+% Aggiungiamo al modello esteso gli ingressi di disturbo
+% d_alpha e d_beta direttamente sulla dinamica dell'elicottero.
+
+Bd_ext = [
+    Bd_nom
+    zeros(4,2)
+];
+
+B_dist = [B_ext Bd_ext];
+
+% Uscite:
+% 1-3 -> sensori
+% 4   -> delta_alpha
+% 5   -> delta_beta
+
+C_dist = [
+    C_ext;
+    1 0 0 0 0 0 0 0;
+    0 0 1 0 0 0 0 0
+];
+
+D_dist = zeros(5,4);
+
+P_dist = ss( ...
+    A_ext, ...
+    B_dist, ...
+    C_dist, ...
+    D_dist);
+
+P_dist.InputName = {
+    'u1'
+    'u2'
+    'd_alpha'
+    'd_beta'
+};
+
+P_dist.OutputName = {
+    'y_acc'
+    'm_x'
+    'm_y'
+    'delta_alpha'
+    'delta_beta'
+};
+
+% Collegamento closed-loop:
+% ingressi esterni = r_alpha, r_beta, d_alpha, d_beta
+%
+% uscite richieste = delta_alpha, delta_beta
+
+CL_dist = connect( ...
+    P_dist, ...
+    K_lqg_2dof, ...
+    {'r_alpha','r_beta','d_alpha','d_beta'}, ...
+    {'delta_alpha','delta_beta'});
+
+%% Trasferimento d_beta -> delta_beta
+
+G_dBeta_beta = CL_dist(2,4);
+
+disp('==============================================')
+disp(' TRASFERIMENTO d_beta -> delta_beta')
+disp('==============================================')
+
+disp(G_dBeta_beta)
+
+dcgain_dBeta_beta = dcgain(G_dBeta_beta);
+
+fprintf('\nGuadagno statico d_beta -> delta_beta = %.8f\n', ...
+    dcgain_dBeta_beta);
+
+%% Risposta a gradino del disturbo beta
+
+figure
+
+step(G_dBeta_beta)
+
+grid on
+
+xlabel('Tempo [s]')
+ylabel('\Delta\beta [rad]')
+title('Reiezione disturbo: d_\beta \rightarrow \Delta\beta')
+
+%% Risposta al disturbo con ampiezza usata in Simulink
+
+d_beta_test = 2e-3;
+
+figure
+
+step(d_beta_test * G_dBeta_beta)
+
+grid on
+
+xlabel('Tempo [s]')
+ylabel('\Delta\beta [rad]')
+title('Risposta a d_\beta = 2e-3 N m')
+
+fprintf('\nRisposta statica prevista per d_beta = %.4g N m:\n', ...
+    d_beta_test);
+
+fprintf('delta_beta_ss = %.8f rad (%.4f deg)\n', ...
+    dcgain_dBeta_beta*d_beta_test, ...
+    rad2deg(dcgain_dBeta_beta*d_beta_test));
+
+V = sensor.R;
+
+Vinv = diag(1./diag(V));
+
+C_angle_meas = C_ext(:,[1 3]);
+
+HalphaBeta = ...
+    (C_angle_meas.'*Vinv*C_angle_meas) \ ...
+    (C_angle_meas.'*Vinv);
 %% ==========================================
 % Connessione LQG regolatore
 % ==========================================
@@ -432,7 +557,7 @@ fprintf('Gba = %.6e\n',gain_ba)
 
 fprintf('Errore statico alpha = %.6f %%\n',100*abs(1-gain_aa))
 fprintf('Errore statico beta  = %.6f %%\n',100*abs(1-gain_bb))
-
+%{
 % 1. Creo l'oggetto opzioni per l'analisi Worst-Case e forzo l'algoritmo 'a' (Advanced)
 opt = wcOptions('MussvOptions', 'a');
 
@@ -443,3 +568,4 @@ disp('Worst-case gain (Algoritmo Avanzato):')
 disp(wcg)
 
 robustperf(CL_unc)
+%}

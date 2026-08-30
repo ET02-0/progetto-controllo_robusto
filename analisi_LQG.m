@@ -11,7 +11,7 @@ clc
 %
 % tipo_test:
 % 1 = tracking nominale, senza rumore/disturbo
-% 2 = tracking + disturbo + rumore: r_alpha = 0.1 rad, r_beta = 0
+% 2 = tracking + disturbo + rumore: r_alpha = deg2rad(3) rad, r_beta = 0
 % 3 = disturbo + rumore
 %% ==========================================
 
@@ -37,7 +37,7 @@ switch tipo_LQG
         alpha = out.alpha_LQG2;
         beta  = out.beta_LQG2;
 
-        r_alpha = 0.1;
+        r_alpha = deg2rad(3);
         r_beta  = 0;
 
         nome = 'LQG 2-DOF senza integratore';
@@ -47,7 +47,7 @@ switch tipo_LQG
         alpha = out.alpha_LQG_int;
         beta  = out.beta_LQG_int;
 
-        r_alpha = 0.1;
+        r_alpha = deg2rad(3);
         r_beta  = 0;
 
         nome = 'LQG 2-DOF con integratore';
@@ -57,12 +57,11 @@ switch tipo_LQG
 end
 
 
-t_alpha     = alpha.Time;
-alpha_value = alpha.Data;
+t_alpha     = alpha.Time(:);
+alpha_value = alpha.Data(:);
 
-t_beta     = beta.Time;
-beta_value = beta.Data;
-
+t_beta      = beta.Time(:);
+beta_value  = beta.Data(:);
 
 %% ==========================================
 % 2. DEFINIZIONE RIFERIMENTI ED ERRORI
@@ -72,12 +71,12 @@ switch tipo_test
 
     case 1
         % Tracking nominale ideale
-        r_alpha = 0.1;
+        r_alpha = deg2rad(3);
         r_beta  = 0;
 
     case 2
         % Tracking + disturbo + rumore
-        r_alpha = 0.1;
+        r_alpha = deg2rad(3);
         r_beta  = 0;
 
     case 3
@@ -174,12 +173,14 @@ if (tipo_test == 1 || tipo_test == 2) && abs(r_alpha) > 1e-6
 
 end
 
+
 %% ==========================================
 % 7. TEMPO DI RECUPERO
 %
 % Il disturbo avviene a t = 10 s.
-% Dopo il disturbo il segnale deve rimanere
-% entro la soglia per almeno 1 s.
+% Il recupero è definito come il primo istante,
+% dopo il picco dell'errore, in cui l'errore
+% rimane entro la soglia per almeno 1 s consecutivo.
 %% ==========================================
 
 T_rec_alpha = NaN;
@@ -192,71 +193,105 @@ if tipo_test == 2 || tipo_test == 3
 
     t_dist = 10;
 
-    soglia_alpha = 0.01;
-    soglia_beta  = 0.07;
+    % Soglie di recupero
+    soglia_alpha = deg2rad(0.3);
+
+    if tipo_test == 2
+        soglia_beta = deg2rad(1.7);
+    else
+        soglia_beta = deg2rad(0.5);
+    end
 
     finestra_rec = 1.0;
 
     idx_post_alpha = find(t_alpha >= t_dist);
     idx_post_beta  = find(t_beta >= t_dist);
 
-    % Picco dopo il disturbo
-    peak_alpha_dist = max(abs(alpha_value(idx_post_alpha)));
-    peak_beta_dist  = max(abs(beta_value(idx_post_beta)));
-
+    % Errore rispetto al riferimento dopo il disturbo
     errore_alpha_post = ...
         abs(alpha_value(idx_post_alpha) - r_alpha);
 
     errore_beta_post = ...
         abs(beta_value(idx_post_beta) - r_beta);
 
-    N_finestra_alpha = max(1,...
-        round(finestra_rec/mean(diff(t_alpha))));
-
-    N_finestra_beta = max(1,...
-        round(finestra_rec/mean(diff(t_beta))));
+    % Picco dell'errore dopo il disturbo
+    peak_alpha_dist = max(errore_alpha_post);
+    peak_beta_dist  = max(errore_beta_post);
 
 
-    % ---- Recupero alpha ----
+    %% ---- Recupero alpha ----
 
-    for k = 1:(length(errore_alpha_post)-N_finestra_alpha+1)
+    [peak_alpha_error, iPeakAlphaRel] = ...
+        max(errore_alpha_post);
 
-        finestra = ...
-            errore_alpha_post(k:k+N_finestra_alpha-1);
+    if peak_alpha_error <= soglia_alpha
 
-        if all(finestra <= soglia_alpha)
+        % Il disturbo non porta alpha fuori dalla banda
+        T_rec_alpha = 0;
 
-            T_rec_alpha = ...
-                t_alpha(idx_post_alpha(k)) - t_dist;
+    else
 
-            break
+        error_alpha_from_peak = ...
+            errore_alpha_post(iPeakAlphaRel:end);
+
+        t_alpha_from_peak = ...
+            t_alpha(idx_post_alpha(iPeakAlphaRel:end));
+
+        Nwin_alpha = max(1, ...
+            round(finestra_rec / mean(diff(t_alpha))));
+
+        for k = 1:(length(error_alpha_from_peak)-Nwin_alpha+1)
+
+            finestra = ...
+                error_alpha_from_peak(k:k+Nwin_alpha-1);
+
+            if all(finestra <= soglia_alpha)
+
+                T_rec_alpha = ...
+                    t_alpha_from_peak(k) - t_dist;
+
+                break
+            end
         end
+
     end
 
 
-    % ---- Recupero beta ----
+    %% ---- Recupero beta ----
 
-    for k = 1:(length(errore_beta_post)-N_finestra_beta+1)
+    [peak_beta_error, iPeakBetaRel] = ...
+        max(errore_beta_post);
 
-        finestra = ...
-            errore_beta_post(k:k+N_finestra_beta-1);
+    if peak_beta_error <= soglia_beta
 
-        if all(finestra <= soglia_beta)
+        % Il disturbo non porta beta fuori dalla banda
+        T_rec_beta = 0;
 
-            T_rec_beta = ...
-                t_beta(idx_post_beta(k)) - t_dist;
+    else
 
-            break
+        error_beta_from_peak = ...
+            errore_beta_post(iPeakBetaRel:end);
+
+        t_beta_from_peak = ...
+            t_beta(idx_post_beta(iPeakBetaRel:end));
+
+        Nwin_beta = max(1, ...
+            round(finestra_rec / mean(diff(t_beta))));
+
+        for k = 1:(length(error_beta_from_peak)-Nwin_beta+1)
+
+            finestra = ...
+                error_beta_from_peak(k:k+Nwin_beta-1);
+
+            if all(finestra <= soglia_beta)
+
+                T_rec_beta = ...
+                    t_beta_from_peak(k) - t_dist;
+
+                break
+            end
         end
-    end
 
-
-    if isnan(T_rec_alpha)
-        T_rec_alpha = NaN;
-    end
-    
-    if isnan(T_rec_beta)
-        T_rec_beta = NaN;
     end
 
 end
@@ -295,7 +330,25 @@ if tipo_test == 2 || tipo_test == 3
     peak_beta_ss  = max(abs(beta_ss));
 
 end
+%% ==========================================
+% 8b. PRESTAZIONI A REGIME - ULTIMI 5 s
+%% ==========================================
 
+T_ss = 5;
+
+idx_last_alpha = t_alpha >= (t_alpha(end) - T_ss);
+idx_last_beta  = t_beta  >= (t_beta(end)  - T_ss);
+
+alpha_last = alpha_value(idx_last_alpha);
+beta_last  = beta_value(idx_last_beta);
+
+err_alpha_last = alpha_last - r_alpha;
+
+RMS_alpha_last = rms(err_alpha_last);
+PeakErr_alpha_last = max(abs(err_alpha_last));
+
+RMS_beta_last = rms(beta_last);
+Peak_beta_last = max(abs(beta_last));
 
 %% ==========================================
 % 9. RISULTATI PRINCIPALI
@@ -333,20 +386,38 @@ if tipo_test == 2
     fprintf('Settling time alpha    = %.4f s\n', ...
         settling_time_alpha);
 
-    fprintf('Picco alpha dopo disturbo = %.6f rad\n', ...
-        peak_alpha_dist);
+    fprintf('Picco errore alpha dopo disturbo = %.6f rad (%.3f deg)\n', ...
+        peak_alpha_dist, rad2deg(peak_alpha_dist));
+    
+    fprintf('Picco errore beta dopo disturbo  = %.6f rad (%.3f deg)\n', ...
+        peak_beta_dist, rad2deg(peak_beta_dist));
 
-    fprintf('Picco beta dopo disturbo  = %.6f rad\n', ...
-        peak_beta_dist);
+    fprintf('\n--- PRESTAZIONI A REGIME - ULTIMI 5 s ---\n');
+
+    fprintf('RMS errore alpha = %.6f rad (%.3f deg)\n', ...
+        RMS_alpha_last, rad2deg(RMS_alpha_last));
+    
+    fprintf('Peak errore alpha = %.6f rad (%.3f deg)\n', ...
+        PeakErr_alpha_last, rad2deg(PeakErr_alpha_last));
+    
+    fprintf('RMS beta = %.6f rad (%.3f deg)\n', ...
+        RMS_beta_last, rad2deg(RMS_beta_last));
+    
+    fprintf('Peak beta = %.6f rad (%.3f deg)\n', ...
+        Peak_beta_last, rad2deg(Peak_beta_last));
 
     if isnan(T_rec_alpha)
         fprintf('Tempo recupero alfa    = NON RAGGIUNTO\n');
+    elseif T_rec_beta == 0
+        fprintf('Alfa non esce dalla banda ±%.1f°\n', rad2deg(soglia_alpha));
     else
         fprintf('Tempo recupero alfa    = %.4f s\n', T_rec_alpha);
     end
 
     if isnan(T_rec_beta)
         fprintf('Tempo recupero beta    = NON RAGGIUNTO\n');
+    elseif T_rec_beta == 0
+        fprintf('Beta non esce dalla banda ±%.1f°\n', rad2deg(soglia_beta));
     else
         fprintf('Tempo recupero beta    = %.4f s\n', T_rec_beta);
     end
@@ -423,6 +494,51 @@ legend('\alpha', '\beta', ...
 
 title(nome)
 
+%% ==========================================
+% 12b. REIEZIONE DISTURBO BETA
+%% ==========================================
+
+figure('Name',[nome ' - Beta disturbance recovery'])
+
+plot(t_beta, beta_value, 'LineWidth', 1.5)
+hold on
+
+yline(soglia_beta, '--')
+yline(-soglia_beta, '--')
+xline(t_dist, ':')
+
+grid on
+xlabel('Tempo [s]')
+ylabel('\beta [rad]')
+
+legend('\beta', ...
+       ['+' num2str(rad2deg(soglia_beta)) '°'], ...
+       ['-' num2str(rad2deg(soglia_beta)) '°'], ...
+       'Disturbo', ...
+       'Location','best')
+
+title('Reiezione del disturbo su \beta')
+
+%% ==========================================
+% 12c. ERRORE DI TRACKING ALPHA
+%% ==========================================
+
+figure('Name',[nome ' - Errore alpha'])
+
+plot(t_alpha, err_alpha, 'LineWidth', 1.5)
+hold on
+
+yline(0, '--')
+
+grid on
+xlabel('Tempo [s]')
+ylabel('e_\alpha [rad]')
+
+legend('e_\alpha', 'e_\alpha = 0', ...
+    'Location','best')
+
+title('Errore di tracking \alpha')
+
 
 %% ==========================================
 % 13. FILTRO DI KALMAN
@@ -455,15 +571,11 @@ end
 t_kalman = t_hat;
 % Stati elicottero
 % [alpha alpha_dot beta beta_dot]
-x_hat_plant = x_hat(:,3:6);
-
-
 alpha_real = x_real(:,1);
-beta_real  = x_real(:,3);
+beta_real  = x_real(:,2);
 
-alpha_hat = x_hat_plant(:,1);
-beta_hat  = x_hat_plant(:,3);
-
+alpha_hat = x_hat(:,1);
+beta_hat  = x_hat(:,2);
 
 err_K_alpha = alpha_real - alpha_hat;
 err_K_beta  = beta_real  - beta_hat;

@@ -12,7 +12,9 @@ disp(' SINTESI LQG 1-DOF SENZA INTEGRATORE (8 STATI)')
 disp('==============================================')
 umax = 5; % esempio Nm
 %% 1) Estrazione imanto nominale e attuatori dal Dataset
-% P_nom è il sistema a 4 stati [alpha, alphad, beta, betad] (2 ingressi, 2 uscite)
+% P_nom è il modello nominale dell'elicottero:
+% 4 stati [alpha, alpha_dot, beta, beta_dot],
+% 2 ingressi di controllo e 3 uscite sensoriali
 [A_heli, B_heli, C_heli, D_heli] = ssdata(P_nom);
 
 % Estrazione dinamica attuatori (secondo ordine, senza Padé per la sintesi)
@@ -29,7 +31,7 @@ P_sintesi = P_nom * Actuators_MIMO;
 
 n_ext = size(A_ext, 1); % Dovrebbe essere 8
 m     = size(B_ext, 2); % 2
-p     = size(C_ext, 1); % 2
+c     = size(C_ext, 1); % 2
 
 fprintf('Stati modello esteso = %d (Attesi: 8)\n', n_ext);
 if n_ext ~= 8
@@ -51,10 +53,10 @@ end
 
 %% 4) Sintesi LQR (Regolazione)
 % Stati: [alpha, alpha_dot, beta, beta_dot, act1, act1_dot, act2, act2_dot]
-Q_heli = diag([200, 40, 200, 40]);  % Penalizziamo molto gli angoli
+Q_heli = diag([1000 40 1500 40]);
 Q_act  = diag([1, 0.1, 1, 0.1]);     % Pesi moderati sugli attuatori
 Q_lqr  = blkdiag(Q_heli, Q_act);
-R_lqr  = 1.0 * eye(m);
+R_lqr = 0.1*eye(2)
 
 K_lqr = lqr(A_ext, B_ext, Q_lqr, R_lqr);
 disp('Guadagni LQR calcolati con successo.');
@@ -62,10 +64,24 @@ disp('Guadagni LQR calcolati con successo.');
 %% 5) Sintesi Filtro di Kalman (Stima dello stato)
 % Il rumore di processo entra attraverso gli ingressi (es. disturbo sui rotori/vento)
 Gk  = B_ext;
-Qn = 5e-3*eye(m);
-Rn = R;
+W = diag([
+    0.001
+    0.001
+]);
 
-Estimator = ss(A_ext, Gk, C_ext, zeros(p, m));
+V = sensor.R;
+
+Qn = W;
+Rn = V;
+
+Vinv = diag(1./diag(V));
+
+C_angle_meas = C_ext(:,[1 3]);
+
+HalphaBeta = ...
+    (C_angle_meas.'*Vinv*C_angle_meas) \ ...
+    (C_angle_meas.'*Vinv);
+Estimator = ss(A_ext, Gk, C_ext, zeros(c, m));
 [~, Ke, ~] = kalman(Estimator, Qn, Rn);
 disp('Filtro di Kalman calcolato con successo.');
 
@@ -101,12 +117,12 @@ disp('Filtro di Kalman calcolato con successo.');
 Ac_ctrl = A_ext - B_ext*K_lqr - Ke*C_ext;
 
 % ingresso = misura y
-Bc_ctrl = -Ke;
+Bc_ctrl = Ke;
 
 % uscita = comando u
 Cc_ctrl = -K_lqr;
 
-Dc_ctrl = zeros(m,p);
+Dc_ctrl = zeros(m,c);
 
 
 K_lqg_reg = ss(Ac_ctrl,...
@@ -121,7 +137,10 @@ K_lqg_reg.OutputName = {'u1','u2'};
 
 disp('Controllore LQG regolatore 1-DOF creato');
 Acl_reg = A_ext - B_ext*K_lqr;
-eig(Acl_reg)
-
 Aobs = A_ext - Ke*C_ext;
-eig(Aobs)
+
+disp('Poli LQR:')
+disp(eig(Acl_reg))
+
+disp('Poli osservatore:')
+disp(eig(Aobs))

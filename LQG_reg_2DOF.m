@@ -47,10 +47,10 @@ P_sintesi = P_nom*Actuators_MIMO;
 
 n_ext = size(A_ext,1);
 m     = size(B_ext,2);
-p     = size(C_ext,1);
+c     = size(C_ext,1);
 
 M = [A_ext B_ext;
-     -C_ext  zeros(p,m)];
+     -C_ext  zeros(c,m)];
 
 disp(rank(M))
 disp(size(M,1))
@@ -62,7 +62,7 @@ tzero(P_sintesi)
 disp('Dimensioni modello esteso:')
 fprintf('Stati   = %d\n',n_ext)
 fprintf('Ingressi= %d\n',m)
-fprintf('Uscite  = %d\n',p)
+fprintf('Uscite  = %d\n',c)
 
 
 if n_ext ~= 8
@@ -110,13 +110,13 @@ fprintf('Osservabilita LQG: %d/%d\n',...
 
 %% Tuning più smorzato
 
-Q_heli = diag([200, 20, 800, 500]);
+Q_heli = diag([800, 20, 10000, 500]);
 
 Q_act = diag([5, 0.5, 5, 0.5]);
 
 Q_lqr = blkdiag(Q_heli, Q_act);
 
-R_lqr = diag([1 1]);
+R_lqr = diag([0.5 0.25]);
 %% -------------------------------------------------
 % 9) Calcolo LQR
 % --------------------------------------------------
@@ -160,7 +160,7 @@ Estimator = ss(...
     A_ext,...
     Gk,...
     C_ext,...
-    zeros(p,m));
+    zeros(c,m));
 
 
 [~,Ke,~] = kalman(Estimator,Qn,Rn);
@@ -196,7 +196,7 @@ Bc_ctrl = [B_ext*Kr, Ke];
 
 % L'uscita del controllore è la u totale: u = -K_lqr*x_hat + Kr*r
 Cc_ctrl = -K_lqr;
-Dc_ctrl = [Kr, zeros(m,p)]; % Il termine Kr*r passa direttamente all'uscita
+Dc_ctrl = [Kr, zeros(m,c)]; % Il termine Kr*r passa direttamente all'uscita
 
 % Creazione del blocco
 K_lqg_2dof = ss(Ac_ctrl, Bc_ctrl, Cc_ctrl, Dc_ctrl);

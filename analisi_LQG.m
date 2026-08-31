@@ -15,8 +15,8 @@ clc
 % 3 = disturbo + rumore
 %% ==========================================
 
-tipo_LQG  = 3;
-tipo_test = 2;
+tipo_LQG  = 1;
+tipo_test = 3;
 
 
 %% ==========================================
@@ -27,8 +27,8 @@ switch tipo_LQG
 
     case 1
 
-        alpha = out.alpha_LQG1;
-        beta  = out.beta_LQG1;
+        alpha = out.alpha_LQG;
+        beta  = out.beta_LQG;
 
         nome = 'LQG 1-DOF senza integratore';
 

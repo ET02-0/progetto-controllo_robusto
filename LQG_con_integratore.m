@@ -153,9 +153,9 @@ end
 % 1. Pesi LQR
 % =================================================================
 
-Q_heli = diag([200 20 100 500]);
+Q_heli = diag([400 20 100 500]);
 Q_act  = diag([5, 0.5, 5, 0.5]);
-Q_int  = diag([150, 150]);
+Q_int = diag([150 800]);
 Q_lqr = blkdiag(Q_heli,Q_act,Q_int);
 
 R_lqr  = diag([1 1]);

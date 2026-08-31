@@ -1,3 +1,4 @@
+%{
 %% ========================================================================
 % SINTESI H-INFINITY STRUTTURATA (HINFSTRUCT)
 % ========================================================================
@@ -87,3 +88,78 @@ fprintf('Ordine del controllore K_struct = %d\n', order(K_struct_scaled));
 
 save('HINF_controllers_struct.mat', 'K_struct', 'K_struct_scaled', 'gamma_struct');
 disp('Sintesi Strutturata completata!');
+%}
+%% ========================================================================
+% SINTESI HINFSTRUCT CORRETTA - NO IMPROPER PLANT ERROR
+% ========================================================================
+disp('============================================================');
+disp(' SINTESI HINFSTRUCT - PID + LEAD/LAG MIMO');
+disp('============================================================');
+
+load('HINF_workspace.mat');
+s = tf('s');
+I2 = eye(2);
+
+%% 1. PID PARAMETRICI (CONVERTITI IN SS PARAMETRICO)
+Kalpha_pid = tunablePID('Kalpha', 'PID');
+Kalpha_pid.Kp.Value = 1.0;  Kalpha_pid.Kp.Minimum = 0;
+Kalpha_pid.Ki.Value = 0.5;  Kalpha_pid.Ki.Minimum = 1e-4;
+Kalpha_pid.Kd.Value = 0.1;  Kalpha_pid.Kd.Minimum = 0;
+Kalpha_pid.Tf.Value = 0.02; Kalpha_pid.Tf.Minimum = 1e-3;
+
+Kbeta_pid = tunablePID('Kbeta', 'PID');
+Kbeta_pid.Kp.Value = 2.0;   Kbeta_pid.Kp.Minimum = 0;
+Kbeta_pid.Ki.Value = 0.5;   Kbeta_pid.Ki.Minimum = 1e-4;
+Kbeta_pid.Kd.Value = 0.2;   Kbeta_pid.Kd.Minimum = 0;
+Kbeta_pid.Tf.Value = 0.02;  Kbeta_pid.Tf.Minimum = 1e-3;
+
+%% 2. LEAD/LAG CON TUNABLESS (ORDINE 1 INIZIALIZZATO)
+Falpha_init = (1 + s/3.0) / (1 + s/12.0);
+Fbeta_init  = (1 + s/2.0) / (1 + s/10.0);
+
+% Inizializzazione corretta del blocco tunableSS
+Falpha_tunable = tunableSS('Falpha', ss(Falpha_init));
+Fbeta_tunable  = tunableSS('Fbeta',  ss(Fbeta_init));
+
+% Cascata canali indipendenti
+Calpha_tunable = Falpha_tunable * Kalpha_pid;
+Cbeta_tunable  = Fbeta_tunable  * Kbeta_pid;
+Kdiag_tunable  = blkdiag(Calpha_tunable, Cbeta_tunable);
+
+%% 3. DISACCOPPIATORE STATICO
+D_phys_init = inv(B_nom([2, 4], :));
+D_scaled_init = Du_inv * D_phys_init * Dy;
+Ddec_tunable = tunableGain('Ddec', D_scaled_init);
+
+K_pidcomp_tunable = Ddec_tunable * Kdiag_tunable;
+
+%% 4. COSTRUZIONE INTERCONNESSIONE CLOSED-LOOP
+L_tunable  = G_scaled * K_pidcomp_tunable;
+S_tunable  = feedback(I2, L_tunable);
+T_tunable  = feedback(L_tunable, I2);
+KS_tunable = K_pidcomp_tunable * S_tunable;
+
+CL_tunable = [WS * S_tunable; 
+              WU * KS_tunable; 
+              WT * T_tunable];
+
+%% 5. OTTIMIZZAZIONE HINFSTRUCT
+opts = hinfstructOptions('Display', 'final', 'RandomStart', 10, 'MaxIter', 300);
+[CL_tuned, gamma_struct] = hinfstruct(CL_tunable, opts);
+
+%% 6. ESTRAZIONE VALORI PER SIMULINK
+Ddec_tuned   = getBlockValue(CL_tuned, 'Ddec');
+Kalpha_tuned = getBlockValue(CL_tuned, 'Kalpha');
+Kbeta_tuned  = getBlockValue(CL_tuned, 'Kbeta');
+Falpha_ss    = getBlockValue(CL_tuned, 'Falpha');
+Fbeta_ss     = getBlockValue(CL_tuned, 'Fbeta');
+
+% Conversione Transfer Fcn per i blocchi di Simulink
+Falpha_tf = tf(Falpha_ss);
+Fbeta_tf  = tf(Fbeta_ss);
+
+% Matrice disaccoppiatore per Simulink
+Ddec_phys = Du * Ddec_tuned * Dy_inv;
+
+fprintf('\n=== SINTESI COMPLETATA CON SUCCESSO ===\n');
+fprintf('Gamma H-inf ottenuto: %.4f\n', gamma_struct);

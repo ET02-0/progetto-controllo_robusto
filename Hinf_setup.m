@@ -40,8 +40,8 @@ disp('Plant nominale e incerto per il tracking creati con successo.');
 % Scaliamo il sistema per rendere le variabili adimensionali per l'ottimizzatore
 scale_alpha = deg2rad(2);
 scale_beta  = deg2rad(3);
-scale_F1    = 0.50;
-scale_F2    = 0.50;
+scale_F1 = 2.5;
+scale_F2 = 2.5;
 
 Dy = diag([scale_alpha, scale_beta]);
 Du = diag([scale_F1, scale_F2]);

@@ -200,6 +200,7 @@ Dc_ctrl = [Kr, zeros(m,c)]; % Il termine Kr*r passa direttamente all'uscita
 
 % Creazione del blocco
 K_lqg_2dof = ss(Ac_ctrl, Bc_ctrl, Cc_ctrl, Dc_ctrl);
+save('LQG_Controllers.mat','K_lqg_2dof','-append');
 K_lqg_2dof.InputName = {
 'r_alpha',...
 'r_beta',...

@@ -245,6 +245,8 @@ K_lqg_int = ss( ...
     Cc_ctrl, ...
     Dc_ctrl);
 
+save('LQG_Controllers.mat','K_lqg_int','-append');
+
 K_lqg_int.InputName = {
     'r_alpha'
     'r_beta'   % Aggiunto per il secondo integratore

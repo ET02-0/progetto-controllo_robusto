@@ -50,7 +50,14 @@ Dy_inv = inv(Dy);
 Du_inv = inv(Du);
 
 % Plant normalizzato (Quello su cui H-inf farà i calcoli)
-G_scaled = minreal(Dy_inv * G_nominal * Du, 1e-7);
+% Creiamo un plant regolarizzato per eliminare il polo quasi-nullo
+A_reg = A_nom;
+% Aggiungiamo smorzamento sull'asse di yaw (velocità di imbardata, stato 4)
+A_reg(4, 4) = A_reg(4, 4) - 0.5; 
+
+P_track_reg = ss(A_reg, B_nom, C_track, D_track);
+G_nominal_reg = minreal(P_track_reg * Actuators_nom_MIMO, 1e-7);
+G_scaled = minreal(Dy_inv * G_nominal_reg * Du, 1e-7);
 G_uncertain_scaled = Dy_inv * G_uncertain * Du;
 
 disp('Normalizzazione completata.');
@@ -60,7 +67,7 @@ s = tf('s');
 
 % --- W_S: Peso sulla Funzione di Sensibilità (Errore di tracking) ---
 Ms_alpha = 1.45;  wb_alpha = 3.7;  As_alpha = 0.015;
-Ms_beta  = 1.50;  wb_beta  = 2.9;  As_beta  = 0.015;
+Ms_beta  = 1.50;  wb_beta  = 5;  As_beta  = 0.015;
 
 WS_alpha = (s/Ms_alpha + wb_alpha) / (s + wb_alpha*As_alpha);
 WS_beta  = (s/Ms_beta  + wb_beta)  / (s + wb_beta*As_beta);

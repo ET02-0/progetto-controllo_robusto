@@ -10,53 +10,9 @@ disp(' SINTESI LQG ESTESA')
 disp('==============================================')
 
 
-
-%% -------------------------------------------------
-% 2) Modello attuatori
-%    secondo ordine wn=30 rad/s zeta=0.7
-% --------------------------------------------------
-
-[A_act,B_act,C_act,D_act] = ssdata(G_act_2nd);
-
-Actuator = ss(A_act,B_act,C_act,D_act);
-
-% due attuatori indipendenti
-Actuators_MIMO = blkdiag(Actuator,Actuator);
-
-
-%% -------------------------------------------------
-% 3) Connessione:
-%
-%       u
-%       |
-%       v
-%   Attuatori
-%       |
-%       v
-%   Elicottero
-%       |
-%       v
-%       y
-%
-% --------------------------------------------------
-
-P_sintesi = P_nom*Actuators_MIMO;
-
-
-[A_ext,B_ext,C_ext,D_ext]=ssdata(P_sintesi);
-
-n_ext = size(A_ext,1);
-m     = size(B_ext,2);
-c     = size(C_ext,1);
-
-M = [A_ext B_ext;
-     -C_ext  zeros(c,m)];
-
 disp(rank(M))
 disp(size(M,1))
-tzero(P_sintesi)
-
-
+tzero(P_ext)
 
 
 disp('Dimensioni modello esteso:')
@@ -80,7 +36,7 @@ disp(eig(A_ext))
 
 
 figure
-pzmap(P_sintesi)
+pzmap(P_ext)
 grid on
 title('Poli modello esteso')
 
@@ -352,15 +308,6 @@ fprintf('delta_beta_ss = %.8f rad (%.4f deg)\n', ...
     dcgain_dBeta_beta*d_beta_test, ...
     rad2deg(dcgain_dBeta_beta*d_beta_test));
 
-V = sensor.R;
-
-Vinv = diag(1./diag(V));
-
-C_angle_meas = C_ext(:,[1 3]);
-
-HalphaBeta = ...
-    (C_angle_meas.'*Vinv*C_angle_meas) \ ...
-    (C_angle_meas.'*Vinv);
 %% ==========================================
 % Connessione LQG regolatore
 % ==========================================

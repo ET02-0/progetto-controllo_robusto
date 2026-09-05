@@ -65,23 +65,32 @@ disp('Normalizzazione completata.');
 %% 4. DEFINIZIONE DEI PESI FREQUENZIALI (W_S, W_U, W_T)
 s = tf('s');
 
-% --- W_S: Peso sulla Funzione di Sensibilità (Errore di tracking) ---
-Ms_alpha = 1.8;  wb_alpha = 0.8;  As_alpha = 0.01;
+
+
+%% ========================================================================
+% 10. PESO WS (Sensitività - Errore di inseguimento)
+% MODIFICA: Abbassata la banda passante (wb) per rendere il sistema meno nervoso.
+% MODIFICA: Abbassato il picco Ms a 1.8 (valori > 2 indicano scarsa robustezza).
+% =========================================================================
+Ms_alpha = 1.8;  wb_alpha = 0.8;  As_alpha = 0.01; % Molto più lento ma stabile
 Ms_beta  = 1.8;  wb_beta  = 0.6;  As_beta  = 0.01;
 
 WS_alpha = (s/Ms_alpha + wb_alpha) / (s + wb_alpha*As_alpha);
-WS_beta  = (s/Ms_beta  + wb_beta)  / (s + wb_beta*As_beta);
+WS_beta  = (s/Ms_beta + wb_beta)   / (s + wb_beta*As_beta);
 WS = blkdiag(WS_alpha, WS_beta);
 
 % --- W_U: Peso sullo Sforzo di Controllo ---
-% Lasciamo un margine alto (0.90) per permettere rotori reattivi
 WU_F2 = 4*(s+1)/(s+20);
 %WU = ss([], [], [], 0.80*eye(2));
 WU = blkdiag(4, WU_F2);
 
-% --- W_T: Peso sulla Sensibilità Complementare (Robustezza al rumore/ritardo) ---
-Mt_alpha = 1.20;  wt_alpha = 10;  At_alpha = 0.01;
-Mt_beta  = 0.8;  wt_beta  = 8;  At_beta  = 0.01;
+
+% --- W_T: Peso sulla Sensibilità Complementare (Robustezza al rumore) ---
+% MODIFICA: Anticipato il roll-off (wt abbassato da 22/18 a 10/8).
+% Questo forza T a spegnersi prima, impedendo al rumore dei sensori di passare.
+Mt_alpha = 1.2;  wt_alpha = 10;  At_alpha = 0.01;
+Mt_beta  = 0.8;  wt_beta  = 8;   At_beta  = 0.01;
+
 
 WT_alpha = (s + wt_alpha*At_alpha) / (s/Mt_alpha + wt_alpha);
 WT_beta  = (s + wt_beta*At_beta)   / (s/Mt_beta  + wt_beta);

@@ -17,18 +17,6 @@ umax = 5; % esempio Nm
 % 2 ingressi di controllo e 3 uscite sensoriali
 [A_heli, B_heli, C_heli, D_heli] = ssdata(P_nom);
 
-% Estrazione dinamica attuatori (secondo ordine, senza Padé per la sintesi)
-[A_act, B_act, C_act, D_act] = ssdata(G_act_2nd);
-Actuator = ss(A_act, B_act, C_act, D_act);
-
-% MIMO attuatori indipendenti (2 ingressi, 2 uscite)
-Actuators_MIMO = blkdiag(Actuator, Actuator);
-
-%% 2) Connessione per il Modello Esteso (8 Stati)
-% P_sintesi = Impianto Elicottero * Attuatori MIMO
-P_sintesi = P_nom * Actuators_MIMO;
-[A_ext, B_ext, C_ext, D_ext] = ssdata(P_sintesi);
-
 n_ext = size(A_ext, 1); % Dovrebbe essere 8
 m     = size(B_ext, 2); % 2
 c     = size(C_ext, 1); % 2
@@ -74,13 +62,6 @@ V = sensor.R;
 Qn = W;
 Rn = V;
 
-Vinv = diag(1./diag(V));
-
-C_angle_meas = C_ext(:,[1 3]);
-
-HalphaBeta = ...
-    (C_angle_meas.'*Vinv*C_angle_meas) \ ...
-    (C_angle_meas.'*Vinv);
 Estimator = ss(A_ext, Gk, C_ext, zeros(c, m));
 [~, Ke, ~] = kalman(Estimator, Qn, Rn);
 disp('Filtro di Kalman calcolato con successo.');

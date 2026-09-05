@@ -9,25 +9,6 @@ clc
 disp('SINTESI LQG 2DOF CON INTEGRATORE')
 
 
-
-%% Attuatori
-
-[A_act,B_act,C_act,D_act] = ssdata(G_act_2nd);
-
-Actuator = ss(A_act,B_act,C_act,D_act);
-
-Actuators_MIMO = blkdiag(Actuator,Actuator);
-
-
-%% Plant esteso
-
-P_ext = P_nom*Actuators_MIMO;
-
-[A_ext,B_ext,C_ext,D_ext]=ssdata(P_ext);
-
-M = [A_ext B_ext;
-     -C_ext zeros(size(C_ext,1),size(B_ext,2))];
-
 disp(rank(M))
 disp(size(M,1))
 tzero(P_ext)
@@ -190,17 +171,6 @@ disp('Guadagno LQR calcolato')
 Gk = B_ext;
 
 W = diag([0.001, 0.001]);
-
-V = sensor.R
-
-Vinv = diag(1./diag(V));
-
-C_angle_meas = C_ext(:,[1 3]);
-
-HalphaBeta = ...
-    (C_angle_meas.'*Vinv*C_angle_meas) \ ...
-    (C_angle_meas.'*Vinv);
-
 
 [Ke,~,~] = lqe(A_ext,Gk,C_ext,W,V);
 

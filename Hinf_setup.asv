@@ -81,7 +81,7 @@ WU = blkdiag(4, WU_F2);
 
 % --- W_T: Peso sulla Sensibilità Complementare (Robustezza al rumore/ritardo) ---
 Mt_alpha = 1.20;  wt_alpha = 10;  At_alpha = 0.01;
-Mt_beta  = 0.8;  wt_beta  = 8;  At_beta  = 0.01;
+Mt_beta  = 0.;  wt_beta  = 8;  At_beta  = 0.01;
 
 WT_alpha = (s + wt_alpha*At_alpha) / (s/Mt_alpha + wt_alpha);
 WT_beta  = (s + wt_beta*At_beta)   / (s/Mt_beta  + wt_beta);

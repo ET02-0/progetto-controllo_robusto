@@ -738,7 +738,7 @@ disp('============================================================');
 %
 %        PID alpha -> lead/lag alpha
 %        PID beta  -> lead/lag beta
-%close all;
+
 clc;
 %load('HINF_setup.mat');
 I2 = eye(2);

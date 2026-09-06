@@ -3,7 +3,7 @@
 % Progetto di Controllo Robusto (Sintesi Robusta su 4 stati)
 % =========================================================================
 
-close all
+%close all
 clc
 
 disp('SINTESI LQG 2DOF CON INTEGRATORE')

@@ -82,14 +82,14 @@ WS = blkdiag(WS_alpha, WS_beta);
 % --- W_U: Peso sullo Sforzo di Controllo ---
 WU_F2 = 4*(s+1)/(s+20);
 %WU = ss([], [], [], 0.80*eye(2));
-WU = blkdiag(4, WU_F2);
+WU = blkdiag(25, WU_F2); % Modifica sul canale 1 prima era 4 non 20 --> 20/25 mi sembrano le soluzioni migliori per hinfstruct
 
 
 % --- W_T: Peso sulla Sensibilità Complementare (Robustezza al rumore) ---
 % MODIFICA: Anticipato il roll-off (wt abbassato da 22/18 a 10/8).
 % Questo forza T a spegnersi prima, impedendo al rumore dei sensori di passare.
-Mt_alpha = 1.2;  wt_alpha = 10;  At_alpha = 0.01;
-Mt_beta  = 0.8;  wt_beta  = 8;   At_beta  = 0.01;
+Mt_alpha = 1.5;  wt_alpha = 10;  At_alpha = 0.01; % Modificato Mt_alpha prima era 1.2
+Mt_beta  = 1.2;  wt_beta  = 8;   At_beta  = 0.01; % idem mt_beta prima era 0.8
 
 
 WT_alpha = (s + wt_alpha*At_alpha) / (s/Mt_alpha + wt_alpha);

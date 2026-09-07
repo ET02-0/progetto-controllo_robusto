@@ -109,6 +109,6 @@ subplot(3,1,3); sigma(inv(WT), omegaWeights); grid on; title('W_T^{-1} (Limite p
 
 % Salviamo il workspace per gli script di sintesi e analisi
 save('HINF_workspace.mat', 'G_nominal', 'G_uncertain', 'G_scaled', 'G_uncertain_scaled', ...
-     'P_mix', 'WS', 'WU', 'WT', 'Dy', 'Du', 'Dy_inv', 'Du_inv');
+     'P_mix', 'WS', 'WU', 'WT', 'Dy', 'Du', 'Dy_inv', 'Du_inv', 'omegaWeights');
 
 disp('Setup completato e HINF_workspace.mat salvato!');

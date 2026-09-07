@@ -1,475 +1,867 @@
 %% ==========================================
-% MONTE CARLO LQG IN SIMULINK
+% MONTE CARLO ANALITICO (SENZA SIMULINK)
+% Elicottero 2-DOF - Validazione Robusta
 % ==========================================
+close all; clc;
 
-disp('--- Avvio Simulazione Monte Carlo per LQG in Simulink ---')
+disp('--- Avvio Analisi Monte Carlo Analitica ---')
+
+% 1. CARICAMENTO DATI E CONTROLLORI
+% Assicurati di aver fatto girare dataset_elicottero.m e Hinf_setup.m
+load('HINF_workspace.mat'); 
+load('HINF_controllers.mat'); % Carica K_mix, K_hinfsyn, K_pidcomp
+load('MU_controller.mat');    % Carica K_mu
+
+% Scegli il controllore da testare (es. K_mix, K_hinfsyn, K_pidcomp o K_mu)
+controllers = {
+    K_mix
+    K_hinfsyn
+    K_pidcomp
+    K_mu
+};
+
+controllerNames = {
+    'mixsyn'
+    'hinfsyn'
+    'PID+comp'
+    'mu-synthesis'
+};
+
+Nc = numel(controllers);
 
 N_campioni = 50;
 rng('default');
 
-%% 1. SALVO IL MODELLO NOMINALE
+%% 2. COSTRUZIONE MODELLO DISTURBI (Gd_uncertain)
+% Il setup H-inf base contiene G_uncertain (da u a y).
+% Dobbiamo creare Gd_uncertain (da d a y) per testare i disturbi aerodinamici.
+% Usiamo le matrici A_unc e Bd_unc generate dal dataset_elicottero.m
+if ~exist('A_unc', 'var')
+    error('Esegui prima dataset_elicottero.m per avere le matrici di stato in workspace.');
+end
 
-A_nom_saved = A_nom;
-B_nom_saved = B_nom;
-Cy_saved   = Cy;
-Dy_saved   = Dy;
+C_angles = [1 0 0 0; 0 0 1 0]; % Estrazione di [alpha; beta]
+D_d = zeros(2,2);
+Gd_uncertain = uss(A_unc, Bd_unc, C_angles, D_d);
 
+% Uniamo impianto e disturbi in un unico oggetto per campionarli insieme in modo coerente
+Gall_unc = [G_uncertain, Gd_uncertain];
+Gall_samples = usample(Gall_unc, N_campioni);
 
-% ==========================================
-% METRICHE MONTE CARLO
-% ==========================================
+%% 3. PARAMETRI DI TEST (Dal dataset)
+% Riferimenti e disturbi
+amp_step_alpha = deg2rad(3); % Gradino di 3 gradi su pitch
+amp_step_beta = deg2rad(3);
+amp_dist_alpha = 5e-3;       % Ampiezza disturbo pitch [N*m]
+amp_dist_beta  = 2e-3;       % Ampiezza disturbo yaw [N*m]
 
-max_alpha     = zeros(N_campioni,1);
-max_beta      = zeros(N_campioni,1);
+% Limite di saturazione attuatori (variazioni rispetto all'equilibrio)
+umax = 2.5; 
 
-rms_alpha     = zeros(N_campioni,1);
-rms_beta      = zeros(N_campioni,1);
+% Vettore dei tempi per la simulazione analitica
+t_sim = 0:0.005:30; 
 
-final_alpha   = zeros(N_campioni,1);
-final_beta    = zeros(N_campioni,1);
+%% 4. INIZIALIZZAZIONE METRICHE
 
-beta_dev_ss = zeros(N_campioni,1);
+Ntot = Nc * N_campioni;
 
-T_rec_beta    = zeros(N_campioni,1);
-T_rec_alpha   = zeros(N_campioni,1);
+resultController = strings(Ntot,1);
+resultSample     = zeros(Ntot,1);
 
-% Metriche sforzo di controllo
-max_u1_cmd = zeros(N_campioni,1);
-max_u2_cmd = zeros(N_campioni,1);
+Stable = false(Ntot,1);
 
-max_u1_sat = zeros(N_campioni,1);
-max_u2_sat = zeros(N_campioni,1);
+PitchSettling = nan(Ntot,1);
+YawSettling   = nan(Ntot,1);
 
-%% 3. FIGURE
+PitchSettledWithinHorizon = false(Ntot,1);
+YawSettledWithinHorizon   = false(Ntot,1);
 
-figure('Name','Monte Carlo Simulink LQG');
+PitchBW = nan(Ntot,1);
+YawBW   = nan(Ntot,1);
 
-subplot(3,1,1)
-hold on
-grid on
-title('Tracking \alpha')
-xlabel('Tempo [s]')
-ylabel('\alpha [rad]')
+PitchOvershoot = nan(Ntot,1);
+YawOvershoot   = nan(Ntot,1);
 
-subplot(3,1,2)
-hold on
-grid on
-title('Tracking \beta')
-xlabel('Tempo [s]')
-ylabel('\beta [rad]')
+PitchSSerror = nan(Ntot,1);
+YawSSerror   = nan(Ntot,1);
 
-subplot(3,1,3)
-hold on
-grid on
-title('Sforzo di controllo')
-xlabel('Tempo [s]')
-ylabel('u')
+YawFromPitchPeak = nan(Ntot,1);
+PitchFromYawPeak = nan(Ntot,1);
 
-%% ==========================================
-% METRICHE
-% ==========================================
-
-% Istante del disturbo
-t_dist = 10;
-
-% Soglie di recupero
-soglia_beta  = 0.07;   % rad
-soglia_alpha = 0.01;   % rad
-
-finestra_rec = 1.0;   % deve rimanere nella fascia per 1 s
-
-%% ==========================================
-% 4. MONTE CARLO
-% ==========================================
-
-for i = 1:N_campioni
+PitchDistPeak = nan(Ntot,1);
+YawDistPeak   = nan(Ntot,1);
 
 
-    %% 4.1 Estrazione campione incerto
-
-    Pk = usample(P_full_unc);
-
-    [Ak,Bk,Ck,Dk] = ssdata(Pk);
+max_u1_cmd = nan(Ntot,1);
+max_u2_cmd = nan(Ntot,1);
 
 
-    %% 4.2 Passaggio del campione a Simulink
+row = 0;
+%% 5. CICLO MONTE CARLO
+for ic = 1:Nc
+    K_test = controllers{ic};
+    for i = 1:N_campioni
+        row = row + 1;
 
-    assignin('base','A_nom',Ak);
-    assignin('base','B_nom',Bk);
-    assignin('base','Cy',Ck);
-    assignin('base','Dy',Dk);
-
-
-    %% 4.3 Simulazione Simulink
-
-    simOut = sim('sim_elicottero',...
-        'SrcWorkspace','base',...
-        'ReturnWorkspaceOutputs','on');
-
-
-    %% 4.4 Estrazione risultati
-
-    alpha_resp = simOut.alpha_LQG_int.Data;
-    beta_resp  = simOut.beta_LQG_int.Data;
-
-    t = simOut.alpha_LQG_int.Time;
-
-    u_cmd = simOut.u_cmd.Data;
-    u_sat = simOut.u_sat.Data;
-
-    if size(u_cmd,2) ~= 2
-        error('u_cmd deve avere 2 colonne: [u1 u2].');
-    end
-    
-    if size(u_sat,2) ~= 2
-        error('u_sat deve avere 2 colonne: [u1_sat u2_sat].');
-    end
-
-
-    %% 4.5 Plot
-
-    subplot(3,1,1)
-    plot(t,alpha_resp)
-    
-    subplot(3,1,2)
-    plot(t,beta_resp)
-    
-    subplot(3,1,3)
-    plot(t,u_cmd(:,1))
-    plot(t,u_cmd(:,2))
-
-
-
-    % ==========================================
-    % 1. Picco assoluto
-    % ==========================================
-    
-    max_alpha(i) = max(abs(alpha_resp));
-    max_beta(i)  = max(abs(beta_resp));
-    
-    
-    % ==========================================
-    % 2. RMS rispetto al riferimento
-    % ==========================================
-    
-    rms_alpha(i) = rms(alpha_resp - 0.1);
-    rms_beta(i)  = rms(beta_resp);
-    
-    
-    % ==========================================
-    % 3. Errore finale
-    % Media degli ultimi 2 s per attenuare il rumore
-    % ==========================================
-    
-    idx_final = t >= (t(end)-2);
-    
-    final_alpha(i) = abs(mean(alpha_resp(idx_final)) - 0.1);
-    
-    beta_mean_ss = mean(beta_resp(idx_final));
-    
-    final_beta(i) = abs(beta_mean_ss);
-    
-    beta_dev_ss(i) = max(abs(beta_resp(idx_final) - beta_mean_ss));
+        resultController(row) = string(controllerNames{ic});
+        resultSample(row) = i;
         
-    
-    % ==========================================
-    % 4. Tempo recupero beta
-    % |beta| <= 0.07 rad per almeno 1 s
-    % ==========================================
-    
-    idx_post = find(t >= t_dist);
-    
-    beta_post = abs(beta_resp(idx_post));
-    
-    N_finestra = max(1,round(finestra_rec/mean(diff(t))));
-    
-    T_rec_beta(i) = NaN;
-    
-    for k = 1:(length(beta_post)-N_finestra+1)
-    
-        finestra = beta_post(k:k+N_finestra-1);
-    
-        if all(finestra <= soglia_beta)
-    
-            T_rec_beta(i) = t(idx_post(k)) - t_dist;
-            break
-    
+        % Estrazione del singolo campione
+        G_sample = Gall_samples(:,:,i);
+        Gu = G_sample(:, 1:2); % Sottomatrice da u a y (Insegumento)
+        Gd = G_sample(:, 3:4); % Sottomatrice da d a y (Disturbi)
+        
+        % Costruzione delle funzioni di anello chiuso
+        L  = Gu * K_test;
+        S  = feedback(eye(2), L);
+        T  = feedback(L, eye(2));
+        KS = K_test * S; % Funzione di sensitività del controllo (da r a u)
+        Td = S * Gd;     % Funzione di sensitività ai disturbi (da d a y)
+        
+        % --- STABILITÀ ---
+        Stable(row) = all(real(pole(T)) < 0);
+        if ~Stable(row)
+            fprintf('%s - Campione %d: INSTABILE!\n', ...
+                controllerNames{ic}, i);
+            continue; 
         end
-    end
-    
-    if isnan(T_rec_beta(i))
-        T_rec_beta(i) = t(end)-t_dist;
-    end
-    
-    
-    % ==========================================
-    % 5. Tempo recupero alpha
-    % |alpha-0.1| <= 0.01 rad per almeno 1 s
-    % ==========================================
-    
-    errore_alpha_post = abs(alpha_resp(idx_post) - 0.1);
-    
-    T_rec_alpha(i) = NaN;
-    
-    for k = 1:(length(errore_alpha_post)-N_finestra+1)
-    
-        finestra = errore_alpha_post(k:k+N_finestra-1);
-    
-        if all(finestra <= soglia_alpha)
-    
-            T_rec_alpha(i) = t(idx_post(k)) - t_dist;
-            break
-    
+        
+        % --- BANDA PASSANTE ---
+        PitchBW(row) = bandwidth(T(1,1));
+        YawBW(row)   = bandwidth(T(2,2));
+        
+        %% ---------------------------------------------------------------
+        % TRACKING PITCH
+        % ---------------------------------------------------------------
+        
+        [y_track, ~] = step(T(:,1) * amp_step_alpha, t_sim);
+        y_track = squeeze(y_track);
+        
+        [u_track, ~] = step(KS(:,1) * amp_step_alpha, t_sim);
+        u_track = squeeze(u_track);
+        
+        % Valore finale reale
+        yss_alpha = dcgain(T(1,1)) * amp_step_alpha;
+        
+        % Settling time alpha
+        info_a = stepinfo( ...
+            y_track(:,1), ...
+            t_sim, ...
+            yss_alpha, ...
+            'SettlingTimeThreshold',0.02);
+        
+        PitchSettling(row) = info_a.SettlingTime;
+        PitchOvershoot(row) = info_a.Overshoot;
+        
+        if ~isfinite(PitchSettling(row))
+            [PitchSettling(row),PitchSettledWithinHorizon(row)] = ...
+                settlingTimeFromTrace( ...
+                    t_sim, ...
+                    y_track(:,1), ...
+                    yss_alpha, ...
+                    0.02);
+        else
+            PitchSettledWithinHorizon(row) = true;
         end
+        
+        % Errore a regime
+        PitchSSerror(row) = ...
+            100 * abs(amp_step_alpha - yss_alpha) / abs(amp_step_alpha);
+        
+        % Cross-coupling alpha -> beta
+        YawFromPitchPeak(row) = max(abs(y_track(:,2)));
+            
+        
+        % Sforzo attuatori
+        max_u1_cmd(row) = max(abs(u_track(:,1)));
+        max_u2_cmd(row) = max(abs(u_track(:,2)));
+
+        %% ---------------------------------------------------------------
+        % TRACKING YAW
+        % ---------------------------------------------------------------
+        
+        [y_yaw, ~] = step(T(:,2) * amp_step_beta, t_sim);
+        y_yaw = squeeze(y_yaw);
+        
+        % Valore finale reale
+        yss_beta = dcgain(T(2,2)) * amp_step_beta;
+        
+        % Settling time beta
+        info_b = stepinfo( ...
+            y_yaw(:,2), ...
+            t_sim, ...
+            yss_beta, ...
+            'SettlingTimeThreshold',0.02);
+        
+        YawSettling(row) = info_b.SettlingTime;
+        YawOvershoot(row) = info_b.Overshoot;
+        
+        if ~isfinite(YawSettling(row))
+            [YawSettling(row),YawSettledWithinHorizon(row)] = ...
+                settlingTimeFromTrace( ...
+                    t_sim, ...
+                    y_yaw(:,2), ...
+                    yss_beta, ...
+                    0.02);
+        else
+            YawSettledWithinHorizon(row) = true;
+        end
+        
+        % Errore a regime
+        YawSSerror(row) = ...
+            100 * abs(amp_step_beta - yss_beta) / abs(amp_step_beta);
+        
+        % Cross-coupling beta -> alpha
+        PitchFromYawPeak(row) = max(abs(y_yaw(:,1)));
+        
+        % --- REIEZIONE DISTURBI AERODINAMICI ---
+        [y_da, ~] = step(Td(:,1) * amp_dist_alpha, t_sim);
+        [y_db, ~] = step(Td(:,2) * amp_dist_beta, t_sim);
+        
+        PitchDistPeak(row) = max(abs(y_da(:,1)));
+        YawDistPeak(row)   = max(abs(y_db(:,2)));
+                
+        % Stampa a schermo progresso
+        fprintf('%s - Campione %d/%d elaborato.\n', ...
+            controllerNames{ic}, i, N_campioni);
     end
-    
-    if isnan(T_rec_alpha(i))
-        T_rec_alpha(i) = t(end)-t_dist;
+end
+%% 6. REPORT RISULTATI
+
+fprintf('\n============================================\n');
+fprintf('       RISULTATI MONTE CARLO LTI\n');
+fprintf('       %d controllori x %d campioni\n', Nc, N_campioni);
+fprintf('============================================\n');
+
+fprintf('Configurazioni totali: %d\n', Ntot);
+fprintf('Configurazioni stabili: %d/%d\n', sum(Stable), Ntot);
+
+% Indici utili
+pitchSettled = Stable & PitchSettledWithinHorizon;
+yawSettled   = Stable & YawSettledWithinHorizon;
+
+%% ---------------------------------------------------------------
+% RISULTATI PER CONTROLLATORE
+% ---------------------------------------------------------------
+
+for ic = 1:Nc
+
+    idx = strcmp(resultController, string(controllerNames{ic}));
+
+    fprintf('\n\n====================================================\n');
+    fprintf('              CONTROLLATORE: %s\n', controllerNames{ic});
+    fprintf('====================================================\n');
+
+    %% STABILITÀ
+    nStable = sum(Stable(idx));
+    nTotCtrl = sum(idx);
+
+    fprintf('\n--- STABILITA'' ---\n');
+    fprintf('Configurazioni stabili = %d/%d\n', nStable, nTotCtrl);
+
+    %% PITCH
+    fprintf('\n--- PRESTAZIONI PITCH (ALPHA) ---\n');
+
+    % Bandwidth
+    validBW_pitch = idx & Stable & isfinite(PitchBW);
+
+    if any(validBW_pitch)
+        fprintf('Banda Passante media      = %.3f rad/s\n', ...
+            mean(PitchBW(validBW_pitch)));
+        fprintf('Banda Passante minima     = %.3f rad/s\n', ...
+            min(PitchBW(validBW_pitch)));
+        fprintf('Banda Passante massima    = %.3f rad/s\n', ...
+            max(PitchBW(validBW_pitch)));
+    else
+        fprintf('Banda Passante media      = NaN rad/s\n');
     end
 
-    %% ==========================================
-    % 6. SFORZO DI CONTROLLO
-    % ==========================================
-    
-    max_u1_cmd(i) = max(abs(u_cmd(:,1)));
-    max_u2_cmd(i) = max(abs(u_cmd(:,2)));
-    
-    max_u1_sat(i) = max(abs(u_sat(:,1)));
-    max_u2_sat(i) = max(abs(u_sat(:,2)));
+    % Settling
+    validSettling_pitch = idx & pitchSettled;
 
-    % ==========================================
-    % Stampa campione
-    % ==========================================
-    
-    fprintf('Campione %d/%d\n',i,N_campioni);
-    fprintf('   max |alpha| = %.6f rad\n',max_alpha(i));
-    fprintf('   max |beta|  = %.6f rad\n',max_beta(i));
-    fprintf('   err finale alpha = %.6f rad\n',final_alpha(i));
-    fprintf('   err finale beta  = %.6f rad\n',final_beta(i));
-    fprintf('   T recupero beta  = %.3f s\n',T_rec_beta(i));
-    fprintf('   T recupero alpha = %.3f s\n',T_rec_alpha(i));
-    fprintf('   max |u1_cmd| = %.6f\n',max_u1_cmd(i));
-    fprintf('   max |u2_cmd| = %.6f\n',max_u2_cmd(i));
+    if any(validSettling_pitch)
+        fprintf('Tempo Assestamento medio  = %.3f s\n', ...
+            mean(PitchSettling(validSettling_pitch)));
+        fprintf('Tempo Assestamento max     = %.3f s\n', ...
+            max(PitchSettling(validSettling_pitch)));
+        fprintf('Tempo Assestamento min     = %.3f s\n', ...
+            min(PitchSettling(validSettling_pitch)));
+    else
+        fprintf('Tempo Assestamento max     = NaN s\n');
+    end
+
+    % Errore regime
+    validSS_pitch = idx & Stable & isfinite(PitchSSerror);
+
+    if any(validSS_pitch)
+        fprintf('Errore a regime medio      = %.4f %%\n', ...
+            mean(PitchSSerror(validSS_pitch)));
+        fprintf('Errore a regime massimo    = %.4f %%\n', ...
+            max(PitchSSerror(validSS_pitch)));
+    else
+        fprintf('Errore a regime massimo    = NaN %%\n');
+    end
+
+    % Disturbo
+    validDist_pitch = idx & Stable & isfinite(PitchDistPeak);
+
+    if any(validDist_pitch)
+        fprintf('Picco massimo da Disturbo  = %.4e rad\n', ...
+            max(PitchDistPeak(validDist_pitch)));
+        fprintf('Picco medio da Disturbo    = %.4e rad\n', ...
+            mean(PitchDistPeak(validDist_pitch)));
+    else
+        fprintf('Picco massimo da Disturbo  = NaN rad\n');
+    end
+
+    %% YAW
+    fprintf('\n--- PRESTAZIONI YAW (BETA) ---\n');
+
+    % Bandwidth
+    validBW_yaw = idx & Stable & isfinite(YawBW);
+
+    if any(validBW_yaw)
+        fprintf('Banda Passante media      = %.3f rad/s\n', ...
+            mean(YawBW(validBW_yaw)));
+        fprintf('Banda Passante minima     = %.3f rad/s\n', ...
+            min(YawBW(validBW_yaw)));
+        fprintf('Banda Passante massima    = %.3f rad/s\n', ...
+            max(YawBW(validBW_yaw)));
+    else
+        fprintf('Banda Passante media      = NaN rad/s\n');
+    end
+
+    % Settling
+    validSettling_yaw = idx & yawSettled;
+
+    if any(validSettling_yaw)
+        fprintf('Tempo Assestamento medio  = %.3f s\n', ...
+            mean(YawSettling(validSettling_yaw)));
+        fprintf('Tempo Assestamento max     = %.3f s\n', ...
+            max(YawSettling(validSettling_yaw)));
+        fprintf('Tempo Assestamento min     = %.3f s\n', ...
+            min(YawSettling(validSettling_yaw)));
+    else
+        fprintf('Tempo Assestamento max     = NaN s\n');
+    end
+
+    % Errore regime
+    validSS_yaw = idx & Stable & isfinite(YawSSerror);
+
+    if any(validSS_yaw)
+        fprintf('Errore a regime medio      = %.4f %%\n', ...
+            mean(YawSSerror(validSS_yaw)));
+        fprintf('Errore a regime massimo    = %.4f %%\n', ...
+            max(YawSSerror(validSS_yaw)));
+    else
+        fprintf('Errore a regime massimo    = NaN %%\n');
+    end
+
+    % Disturbo
+    validDist_yaw = idx & Stable & isfinite(YawDistPeak);
+
+    if any(validDist_yaw)
+        fprintf('Picco massimo da Disturbo  = %.4e rad\n', ...
+            max(YawDistPeak(validDist_yaw)));
+        fprintf('Picco medio da Disturbo    = %.4e rad\n', ...
+            mean(YawDistPeak(validDist_yaw)));
+    else
+        fprintf('Picco massimo da Disturbo  = NaN rad\n');
+    end
+
+    %% ACCOPPIAMENTO
+    fprintf('\n--- ACCOPPIAMENTO ---\n');
+
+    validCross1 = idx & Stable & isfinite(YawFromPitchPeak);
+    validCross2 = idx & Stable & isfinite(PitchFromYawPeak);
+
+    if any(validCross1)
+        fprintf('Sbandamento Beta da Pitch  = %.4e rad\n', ...
+            max(YawFromPitchPeak(validCross1)));
+    else
+        fprintf('Sbandamento Beta da Pitch  = NaN rad\n');
+    end
+
+    if any(validCross2)
+        fprintf('Sbandamento Alpha da Yaw   = %.4e rad\n', ...
+            max(PitchFromYawPeak(validCross2)));
+    else
+        fprintf('Sbandamento Alpha da Yaw   = NaN rad\n');
+    end
+
+    %% SFORZO DI CONTROLLO
+    fprintf('\n--- SFORZO DI CONTROLLO ---\n');
+
+    validU1 = idx & Stable & isfinite(max_u1_cmd);
+    validU2 = idx & Stable & isfinite(max_u2_cmd);
+
+    if any(validU1)
+        worst_u1 = max(max_u1_cmd(validU1));
+    else
+        worst_u1 = NaN;
+    end
+
+    if any(validU2)
+        worst_u2 = max(max_u2_cmd(validU2));
+    else
+        worst_u2 = NaN;
+    end
+
+    fprintf('Worst max |u1_cmd| = %.4f N (Limite = %.2f)\n', ...
+        worst_u1, umax);
+
+    fprintf('Worst max |u2_cmd| = %.4f N (Limite = %.2f)\n', ...
+        worst_u2, umax);
+
+    if any(idx & Stable)
+        n_sat_ctrl = sum( ...
+            max_u1_cmd(idx & Stable) > umax | ...
+            max_u2_cmd(idx & Stable) > umax);
+    else
+        n_sat_ctrl = 0;
+    end
+
+    fprintf('Campioni che saturano gli attuatori: %d/%d\n', ...
+        n_sat_ctrl, nStable);
+
+end
+
+
+%% ---------------------------------------------------------------
+% RIEPILOGO COMPLESSIVO
+% ---------------------------------------------------------------
+
+fprintf('\n\n============================================\n');
+fprintf('         RIEPILOGO COMPLESSIVO\n');
+fprintf('============================================\n');
+
+fprintf('Configurazioni stabili totali: %d/%d\n', ...
+    sum(Stable), Ntot);
+
+validBW_pitch_all = Stable & isfinite(PitchBW);
+validBW_yaw_all   = Stable & isfinite(YawBW);
+
+if any(validBW_pitch_all)
+    fprintf('Bandwidth pitch media      = %.3f rad/s\n', ...
+        mean(PitchBW(validBW_pitch_all)));
+end
+
+if any(validBW_yaw_all)
+    fprintf('Bandwidth yaw media        = %.3f rad/s\n', ...
+        mean(YawBW(validBW_yaw_all)));
+end
+
+if any(pitchSettled)
+    fprintf('Max settling pitch         = %.3f s\n', ...
+        max(PitchSettling(pitchSettled)));
+end
+
+if any(yawSettled)
+    fprintf('Max settling yaw           = %.3f s\n', ...
+        max(YawSettling(yawSettled)));
+end
+
+fprintf('Max errore regime pitch    = %.4f %%\n', ...
+    max(PitchSSerror(Stable)));
+
+fprintf('Max errore regime yaw      = %.4f %%\n', ...
+    max(YawSSerror(Stable)));
+
+validOS_pitch = Stable & isfinite(PitchOvershoot);
+
+if any(validOS_pitch)
+    fprintf('Overshoot pitch medio           = %.4f %%\n', ...
+        mean(PitchOvershoot(validOS_pitch)));
+    fprintf('Overshoot pitch massimo         = %.4f %%\n', ...
+        max(PitchOvershoot(validOS_pitch)));
+else
+    fprintf('Overshoot pitch massimo         = NaN %%\n');
+end
+
+validOS_yaw = Stable & isfinite(YawOvershoot);
+
+if any(validOS_yaw)
+    fprintf('Overshoot yaw medio           = %.4f %%\n', ...
+        mean(YawOvershoot(validOS_yaw)));
+    fprintf('Overshoot yaw massimo         = %.4f %%\n', ...
+        max(YawOvershoot(validOS_yaw)));
+else
+    fprintf('Overshoot yaw massimo         = NaN %%\n');
+end
+
+fprintf('Max disturbo pitch         = %.4e rad\n', ...
+    max(PitchDistPeak(Stable)));
+
+fprintf('Max disturbo yaw           = %.4e rad\n', ...
+    max(YawDistPeak(Stable)));
+
+fprintf('Max beta da pitch          = %.4e rad\n', ...
+    max(YawFromPitchPeak(Stable)));
+
+fprintf('Max alpha da yaw            = %.4e rad\n', ...
+    max(PitchFromYawPeak(Stable)));
+
+fprintf('Worst max |u1_cmd|          = %.4f N\n', ...
+    max(max_u1_cmd(Stable)));
+
+fprintf('Worst max |u2_cmd|          = %.4f N\n', ...
+    max(max_u2_cmd(Stable)));
+
+n_sat = sum(max_u1_cmd(Stable) > umax | ...
+           max_u2_cmd(Stable) > umax);
+
+fprintf('Campioni totali in saturazione: %d/%d\n', ...
+    n_sat, sum(Stable));
+
+%% 7. PLOT CONFRONTO TRA CONTROLLORI
+% ==========================================
+
+ControllerPlot = categorical(resultController);
+
+% Ordine dei controllori
+labels = {'mixsyn','hinfsyn','PID+comp','mu-synthesis'};
+
+%% Calcolo statistiche per controllore
+
+meanPitchSettling = nan(Nc,1);
+maxPitchSettling  = nan(Nc,1);
+
+meanYawSettling = nan(Nc,1);
+maxYawSettling  = nan(Nc,1);
+
+meanPitchBW = nan(Nc,1);
+meanYawBW   = nan(Nc,1);
+
+meanPitchOS = nan(Nc,1);
+maxPitchOS  = nan(Nc,1);
+
+meanYawOS = nan(Nc,1);
+maxYawOS  = nan(Nc,1);
+
+meanYawFromPitch = nan(Nc,1);
+maxYawFromPitch  = nan(Nc,1);
+
+meanPitchFromYaw = nan(Nc,1);
+maxPitchFromYaw  = nan(Nc,1);
+
+meanPitchSSE = nan(Nc,1);
+maxPitchSSE  = nan(Nc,1);
+
+meanYawSSE = nan(Nc,1);
+maxYawSSE  = nan(Nc,1);
+
+
+for ic = 1:Nc
+
+    idx = strcmp(resultController, string(controllerNames{ic})) & Stable;
+
+    % --- Settling alpha ---
+    v = PitchSettling(idx & isfinite(PitchSettling));
+    if ~isempty(v)
+        meanPitchSettling(ic) = mean(v);
+        maxPitchSettling(ic)  = max(v);
+    end
+
+    % --- Settling beta ---
+    v = YawSettling(idx & isfinite(YawSettling));
+    if ~isempty(v)
+        meanYawSettling(ic) = mean(v);
+        maxYawSettling(ic)  = max(v);
+    end
+
+    % --- Bandwidth alpha ---
+    v = PitchBW(idx & isfinite(PitchBW));
+    if ~isempty(v)
+        meanPitchBW(ic) = mean(v);
+    end
+
+    % --- Bandwidth beta ---
+    v = YawBW(idx & isfinite(YawBW));
+    if ~isempty(v)
+        meanYawBW(ic) = mean(v);
+    end
+
+    % --- Overshoot alpha ---
+    v = PitchOvershoot(idx & isfinite(PitchOvershoot));
+    if ~isempty(v)
+        meanPitchOS(ic) = mean(v);
+        maxPitchOS(ic)  = max(v);
+    end
+
+    % --- Overshoot beta ---
+    v = YawOvershoot(idx & isfinite(YawOvershoot));
+    if ~isempty(v)
+        meanYawOS(ic) = mean(v);
+        maxYawOS(ic)  = max(v);
+    end
+
+    % --- Cross coupling alpha -> beta ---
+    v = YawFromPitchPeak(idx & isfinite(YawFromPitchPeak));
+    if ~isempty(v)
+        meanYawFromPitch(ic) = mean(v);
+        maxYawFromPitch(ic)  = max(v);
+    end
+
+    % --- Cross coupling beta -> alpha ---
+    v = PitchFromYawPeak(idx & isfinite(PitchFromYawPeak));
+    if ~isempty(v)
+        meanPitchFromYaw(ic) = mean(v);
+        maxPitchFromYaw(ic)  = max(v);
+    end
+
+    % --- Errore regime alpha ---
+    v = PitchSSerror(idx & isfinite(PitchSSerror));
+    if ~isempty(v)
+        meanPitchSSE(ic) = mean(v);
+        maxPitchSSE(ic)  = max(v);
+    end
+
+    % --- Errore regime beta ---
+    v = YawSSerror(idx & isfinite(YawSSerror));
+    if ~isempty(v)
+        meanYawSSE(ic) = mean(v);
+        maxYawSSE(ic)  = max(v);
+    end
+
 end
 
 
 %% ==========================================
-% 5. RIPRISTINO MODELLO NOMINALE
+% FIGURA 1 - SETTLING TIME
 % ==========================================
 
-assignin('base','A_nom',A_nom_saved);
-assignin('base','B_nom',B_nom_saved);
-assignin('base','Cy',Cy_saved);
-assignin('base','Dy',Dy_saved);
+figure('Name','Settling Time','Color','w');
+
+subplot(1,2,1)
+
+bar(meanPitchSettling)
+hold on
+plot(1:Nc,maxPitchSettling,'k^','MarkerSize',7,'LineWidth',1.2)
+hold off
+
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('Settling time \alpha [s]')
+title('Settling time \alpha')
+legend('Media','Massimo','Location','best')
+grid on
+
+
+subplot(1,2,2)
+
+bar(meanYawSettling)
+hold on
+plot(1:Nc,maxYawSettling,'k^','MarkerSize',7,'LineWidth',1.2)
+hold off
+
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('Settling time \beta [s]')
+title('Settling time \beta')
+legend('Media','Massimo','Location','best')
+grid on
 
 
 %% ==========================================
-% 6. SIMULAZIONE NOMINALE
+% FIGURA 2 - BANDWIDTH
 % ==========================================
 
-disp(' ')
-disp('--- Simulazione nominale ---')
+figure('Name','Bandwidth','Color','w');
 
-simOut_nom = sim('sim_elicottero',...
-    'SrcWorkspace','base',...
-    'ReturnWorkspaceOutputs','on');
+subplot(1,2,1)
 
+bar(meanPitchBW)
 
-t_nom     = simOut_nom.alpha_LQG_int.Time;
-alpha_nom = simOut_nom.alpha_LQG_int.Data;
-beta_nom  = simOut_nom.beta_LQG_int.Data;
-
-
-u_cmd_nom = simOut_nom.u_cmd.Data;
-u_sat_nom = simOut_nom.u_sat.Data;
-
-if size(u_cmd_nom,2) ~= 2
-    error('u_cmd_nom deve avere 2 colonne: [u1 u2].');
-end
-
-if size(u_sat_nom,2) ~= 2
-    error('u_sat_nom deve avere 2 colonne: [u1_sat u2_sat].');
-end
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('Bandwidth \alpha [rad/s]')
+title('Bandwidth \alpha')
+grid on
 
 
+subplot(1,2,2)
 
+bar(meanYawBW)
 
-%% 7. PLOT NOMINALE
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('Bandwidth \beta [rad/s]')
+title('Bandwidth \beta')
+grid on
 
-subplot(3,1,1)
-plot(t_nom,alpha_nom,'k','LineWidth',2)
-legend('Campioni incerti','Nominale','Location','best')
-
-subplot(3,1,2)
-plot(t_nom,beta_nom,'k','LineWidth',2)
-legend('Campioni incerti','Nominale','Location','best')
-
-subplot(3,1,3)
-plot(t_nom,u_cmd_nom(:,1),'k','LineWidth',2)
-plot(t_nom,u_cmd_nom(:,2),'--k','LineWidth',2)
-
-legend('u_1 campioni','u_2 campioni',...
-       'u_1 nominale','u_2 nominale',...
-       'Location','best')
-
-fprintf('\n============================================\n')
-fprintf('       MONTE CARLO SIMULINK - %d CAMPIONI\n',N_campioni)
-fprintf('============================================\n')
-
-fprintf('\n--- ALPHA ---\n')
-
-fprintf('Picco massimo |alpha|       = %.6f rad (campione %d)\n',...
-    max(max_alpha),find(max_alpha == max(max_alpha),1));
-
-fprintf('Errore finale massimo alpha = %.6f rad (campione %d)\n',...
-    max(final_alpha),find(final_alpha == max(final_alpha),1));
-
-fprintf('RMS massimo errore alpha    = %.6f rad (campione %d)\n',...
-    max(rms_alpha),find(rms_alpha == max(rms_alpha),1));
-
-fprintf('Tempo recupero alpha worst  = %.3f s (campione %d)\n',...
-    max(T_rec_alpha),find(T_rec_alpha == max(T_rec_alpha),1));
-
-
-fprintf('\n--- BETA ---\n')
-
-fprintf('Picco massimo |beta|        = %.6f rad (campione %d)\n',...
-    max(max_beta),find(max_beta == max(max_beta),1));
-
-fprintf('Errore finale massimo beta  = %.6f rad (campione %d)\n',...
-    max(final_beta),find(final_beta == max(final_beta),1));
-
-fprintf('Oscillazione residua beta   = %.6f rad (campione %d)\n',...
-    max(beta_dev_ss),find(beta_dev_ss == max(beta_dev_ss),1));
-
-fprintf('RMS massimo beta            = %.6f rad (campione %d)\n',...
-    max(rms_beta),find(rms_beta == max(rms_beta),1));
-
-fprintf('Tempo recupero beta worst   = %.3f s (campione %d)\n',...
-    max(T_rec_beta),find(T_rec_beta == max(T_rec_beta),1));
-
-
-fprintf('\n--- SFORZO DI CONTROLLO ---\n')
-
-fprintf('Worst max |u1_cmd| = %.6f (campione %d)\n',...
-    max(max_u1_cmd),find(max_u1_cmd == max(max_u1_cmd),1));
-
-fprintf('Worst max |u2_cmd| = %.6f (campione %d)\n',...
-    max(max_u2_cmd),find(max_u2_cmd == max(max_u2_cmd),1));
-
-fprintf('Worst max |u1_sat| = %.6f (campione %d)\n',...
-    max(max_u1_sat),find(max_u1_sat == max(max_u1_sat),1));
-
-fprintf('Worst max |u2_sat| = %.6f (campione %d)\n',...
-    max(max_u2_sat),find(max_u2_sat == max(max_u2_sat),1));
-
-fprintf('\nUtilizzo massimo attuatore:\n')
-fprintf('u1: %.2f %% del limite\n',...
-    100*max(max_u1_cmd)/umax);
-
-fprintf('u2: %.2f %% del limite\n',...
-    100*max(max_u2_cmd)/umax);
-
-n_sat_u1 = sum(max_u1_cmd > umax);
-n_sat_u2 = sum(max_u2_cmd > umax);
-
-fprintf('\nControllo effettiva saturazione:\n');
-
-fprintf('max |u1_cmd| - max |u1_sat| = %.6f\n',...
-    max(max_u1_cmd) - max(max_u1_sat));
-
-fprintf('max |u2_cmd| - max |u2_sat| = %.6f\n',...
-    max(max_u2_cmd) - max(max_u2_sat));
-
-fprintf('\nCampioni con saturazione u1: %d/%d\n',...
-    n_sat_u1,N_campioni);
-
-fprintf('Campioni con saturazione u2: %d/%d\n',...
-    n_sat_u2,N_campioni);
 
 %% ==========================================
-% DISTRIBUZIONE DELLE METRICHE MONTE CARLO
+% FIGURA 3 - OVERSHOOT
 % ==========================================
 
-figure('Name','Distribuzione metriche Monte Carlo');
+figure('Name','Overshoot','Color','w');
 
-subplot(2,2,1)
-histogram(max_beta,10)
+subplot(1,2,1)
+
+bar(meanPitchOS)
+hold on
+plot(1:Nc,maxPitchOS,'k^','MarkerSize',7,'LineWidth',1.2)
+hold off
+
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('Overshoot \alpha [%]')
+title('Overshoot \alpha')
+legend('Media','Massimo','Location','best')
 grid on
-xlabel('max |\beta| [rad]')
-ylabel('Numero campioni')
-title('Distribuzione picco |\beta|')
 
-subplot(2,2,2)
-histogram(T_rec_beta,10)
+
+subplot(1,2,2)
+
+bar(meanYawOS)
+hold on
+plot(1:Nc,maxYawOS,'k^','MarkerSize',7,'LineWidth',1.2)
+hold off
+
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('Overshoot \beta [%]')
+title('Overshoot \beta')
+legend('Media','Massimo','Location','best')
 grid on
-xlabel('Tempo recupero [s]')
-ylabel('Numero campioni')
-title('Distribuzione T_{rec} \beta')
 
-subplot(2,2,3)
-histogram(final_beta,10)
+
+%% ==========================================
+% FIGURA 4 - CROSS COUPLING
+% ==========================================
+
+figure('Name','Cross Coupling','Color','w');
+
+subplot(1,2,1)
+
+bar(meanYawFromPitch)
+hold on
+plot(1:Nc,maxYawFromPitch,'k^','MarkerSize',7,'LineWidth',1.2)
+hold off
+
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('\beta \leftarrow \alpha [rad]')
+title('\alpha \rightarrow \beta')
+legend('Media','Massimo','Location','best')
 grid on
-xlabel('Errore medio finale |\beta| [rad]')
-ylabel('Numero campioni')
-title('Distribuzione errore finale \beta')
 
-subplot(2,2,4)
-histogram(beta_dev_ss,10)
+
+subplot(1,2,2)
+
+bar(meanPitchFromYaw)
+hold on
+plot(1:Nc,maxPitchFromYaw,'k^','MarkerSize',7,'LineWidth',1.2)
+hold off
+
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('\alpha \leftarrow \beta [rad]')
+title('\beta \rightarrow \alpha')
+legend('Media','Massimo','Location','best')
 grid on
-xlabel('Oscillazione residua [rad]')
-ylabel('Numero campioni')
-title('Distribuzione oscillazione residua \beta')
 
-figure('Name','Distribuzione metriche Alpha');
+%% ==========================================
+% FIGURA 5 - ERRORE A REGIME
+% ==========================================
 
-subplot(1,3,1)
-histogram(max_alpha,10)
+figure('Name','Errore a regime','Color','w');
+
+% --- Alpha ---
+subplot(1,2,1)
+
+bar(meanPitchSSE)
+
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('Errore a regime \alpha [%]')
+title('Errore a regime \alpha')
 grid on
-xlabel('max |\alpha| [rad]')
-ylabel('Numero campioni')
-title('Picco |\alpha|')
 
-subplot(1,3,2)
-histogram(T_rec_alpha,10)
+for ic = 1:Nc
+    if isfinite(meanPitchSSE(ic))
+        text(ic, meanPitchSSE(ic), ...
+            sprintf('%.3g %%',meanPitchSSE(ic)), ...
+            'HorizontalAlignment','center', ...
+            'VerticalAlignment','bottom');
+    end
+end
+
+
+% --- Beta ---
+subplot(1,2,2)
+
+bar(meanYawSSE)
+
+set(gca,'XTick',1:Nc,'XTickLabel',labels)
+ylabel('Errore a regime \beta [%]')
+title('Errore a regime \beta')
 grid on
-xlabel('Tempo recupero [s]')
-ylabel('Numero campioni')
-title('T_{rec} \alpha')
 
-subplot(1,3,3)
-histogram(final_alpha,10)
-grid on
-xlabel('Errore finale |\alpha| [rad]')
-ylabel('Numero campioni')
-title('Errore finale \alpha')
+for ic = 1:Nc
+    if isfinite(meanYawSSE(ic))
+        text(ic, meanYawSSE(ic), ...
+            sprintf('%.3g %%',meanYawSSE(ic)), ...
+            'HorizontalAlignment','center', ...
+            'VerticalAlignment','bottom');
+    end
+end
 
-figure('Name','Distribuzione sforzo di controllo');
+sgtitle('Errore a regime - Monte Carlo');
+MonteCarloResults = table( ...
+    resultController, ...
+    resultSample, ...
+    Stable, ...
+    PitchSettling, ...
+    YawSettling, ...
+    PitchSettledWithinHorizon, ...
+    YawSettledWithinHorizon, ...
+    PitchBW, ...
+    YawBW, ...
+    PitchOvershoot, ...
+    YawOvershoot, ...
+    PitchSSerror, ...
+    YawSSerror, ...
+    YawFromPitchPeak, ...
+    PitchFromYawPeak, ...
+    PitchDistPeak, ...
+    YawDistPeak, ...
+    'VariableNames',{ ...
+    'Controller'
+    'Sample'
+    'Stable'
+    'PitchSettling'
+    'YawSettling'
+    'PitchSettledWithinHorizon'
+    'YawSettledWithinHorizon'
+    'PitchBandwidth'
+    'YawBandwidth'
+    'PitchOvershootPercent'
+    'YawOvershootPercent'
+    'PitchSteadyStateErrorPercent'
+    'YawSteadyStateErrorPercent'
+    'YawFromPitchPeak'
+    'PitchFromYawPeak'
+    'PitchDisturbancePeak'
+    'YawDisturbancePeak'
+    });
 
-subplot(2,2,1)
-histogram(max_u1_cmd,10)
-grid on
-xlabel('max |u_1|')
-ylabel('Numero campioni')
-title('Picco comando u_1')
+disp(MonteCarloResults);
 
-subplot(2,2,2)
-histogram(max_u2_cmd,10)
-grid on
-xlabel('max |u_2|')
-ylabel('Numero campioni')
-title('Picco comando u_2')
+writetable( ...
+    MonteCarloResults, ...
+    'MonteCarloRobustness.csv');
 
-subplot(2,2,3)
-histogram(max_u1_sat,10)
-grid on
-xlabel('max |u_{1,sat}|')
-ylabel('Numero campioni')
-title('Picco u_1 dopo saturazione')
+function [ts,settled] = settlingTimeFromTrace(t,y,yss,threshold)
 
-subplot(2,2,4)
-histogram(max_u2_sat,10)
-grid on
-xlabel('max |u_{2,sat}|')
-ylabel('Numero campioni')
-title('Picco u_2 dopo saturazione')
+    t = t(:);
+    y = y(:);
+
+    scale = max(abs(yss),1e-9);
+    band = threshold*scale;
+    outside = abs(y-yss) > band;
+
+    lastOutside = find(outside,1,'last');
+
+    if isempty(lastOutside)
+        ts = t(1);
+        settled = true;
+    elseif lastOutside < numel(t)
+        ts = t(lastOutside+1);
+        settled = true;
+    else
+        ts = NaN;
+        settled = false;
+    end
+end

@@ -1,0 +1,164 @@
+%% ========================================================================
+% ANALISI COMPLETA H-INFINITY: TEORIA + VALIDAZIONE SIMULINK
+% ========================================================================
+clear all; close all; clc;
+
+disp('============================================================');
+disp(' AVVIO ANALISI COMPLETA H-INFINITY');
+disp('============================================================');
+
+%% 1. CARICAMENTO DATI
+% Assicurati di aver fatto girare il Setup e la Sintesi prima di questo
+load('HINF_workspace.mat');
+load('HINF_controllers_full.mat'); 
+
+% Nome del modello Simulink da validare (SENZA estensione .slx)
+model_name = 'nome_del_tuo_modello_simulink'; 
+
+I2 = eye(2);
+omegaHinf = logspace(-2, 3, 500);
+tStep = 0:0.01:15; % Orizzonte temporale per step teorico
+
+% Lista controllori da analizzare
+controllersScaled = {K_hinfsyn_scaled, K_mix_scaled};
+controllersPhysical = {K_hinfsyn, K_mix};
+controllerNames = {'Hinfsyn', 'Mixsyn'};
+nContr = length(controllerNames);
+
+% Impostazioni grafiche
+fig_S  = figure('Name','Funzione di Sensibilità S'); hold on; grid on;
+fig_KS = figure('Name','Sforzo di Controllo KS'); hold on; grid on;
+fig_T  = figure('Name','Sensibilità Complementare T'); hold on; grid on;
+fig_step_teorico = figure('Name','Step Risposta Teorica (Lineare)'); 
+
+%% ========================================================================
+% 2. ANALISI TEORICA (FREQUENZA, MARGINI ROBUSTI E TEMPO LINEARE)
+% ========================================================================
+for k = 1:nContr
+    Ks = controllersScaled{k};
+    Kp = controllersPhysical{k};
+    name = controllerNames{k};
+    
+    fprintf('\n---> ANALISI CONTROLLORE: %s <---\n', upper(name));
+    
+    % --- LOOP NORMALIZZATO (Per Frequenza e Mu-Analisi) ---
+    Ls = G_scaled * Ks;
+    Ss = minreal(feedback(I2, Ls), 1e-7);
+    Ts = minreal(feedback(Ls, I2), 1e-7);
+    KSs = minreal(Ks * Ss, 1e-7);
+    
+    % Plot Frequenziali
+    figure(fig_S);  sigma(Ss, omegaHinf); 
+    figure(fig_KS); sigma(KSs, omegaHinf);
+    figure(fig_T);  sigma(Ts, omegaHinf);
+    
+    % --- CALCOLO MARGINI ROBUSTI ---
+    % 1. Nominal Stability (NS)
+    polesNom = pole(Ts);
+    if all(real(polesNom) < 0), disp(' [PASS] Nominal Stability (NS)'); else, disp(' [FAIL] Nominal Stability (NS)'); end
+    
+    % 2. Nominal Performance (NP)
+    WeightedNominalCL = [WS*Ss; WU*KSs; WT*Ts];
+    gammaNom = hinfnorm(minreal(WeightedNominalCL, 1e-7));
+    if gammaNom < 1, fprintf(' [PASS] Nominal Performance (NP) - Gamma = %.3f\n', gammaNom); else, fprintf(' [FAIL] Nominal Performance (NP) - Gamma = %.3f\n', gammaNom); end
+    
+    % 3. Robust Stability (RS)
+    Lunc = G_uncertain_scaled * Ks;
+    Tunc = feedback(Lunc, I2);
+    [stabMargin, ~] = robstab(Tunc, robOptions('Display','off'));
+    if stabMargin.LowerBound > 1, fprintf(' [PASS] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound); else, fprintf(' [FAIL] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound); end
+    
+    % 4. Robust Performance (RP) - wcgain
+    Sunc = feedback(I2, Lunc);
+    KSunc = Ks * Sunc;
+    WeightedUncertainCL = [WS*Sunc; WU*KSunc; WT*Tunc];
+    [wcGain, ~] = wcgain(WeightedUncertainCL, wcOptions('Display','off'));
+    if wcGain.UpperBound < 1, fprintf(' [PASS] Robust Performance (RP) - Worst Gain = %.3f\n', wcGain.UpperBound); else, fprintf(' [FAIL] Robust Performance (RP) - Worst Gain = %.3f\n', wcGain.UpperBound); end
+
+    % --- ANALISI TEMPORALE TEORICA (Loop Fisico) ---
+    Lp = G_nominal * Kp;
+    Tp = minreal(feedback(Lp, I2), 1e-7);
+    
+    figure(fig_step_teorico);
+    subplot(2,1,1); hold on; grid on;
+    [y_pitch, t_p] = step(Tp(1,1) * scale_alpha, tStep);
+    plot(t_p, rad2deg(y_pitch), 'LineWidth', 1.5);
+    
+    subplot(2,1,2); hold on; grid on;
+    [y_yaw, t_y] = step(Tp(2,2) * scale_beta, tStep);
+    plot(t_y, rad2deg(y_yaw), 'LineWidth', 1.5);
+end
+
+% Completamento grafici in frequenza
+figure(fig_S); sigma(inv(WS), omegaHinf, 'k--'); title('Sensibilità S(j\omega)'); legend([controllerNames, 'W_S^{-1}']);
+figure(fig_KS); sigma(inv(WU), omegaHinf, 'k--'); title('Sensibilità Controllo KS(j\omega)'); legend([controllerNames, 'W_U^{-1}']);
+figure(fig_T); sigma(inv(WT), omegaHinf, 'k--'); title('Sensibilità Complementare T(j\omega)'); legend([controllerNames, 'W_T^{-1}']);
+
+% Completamento grafici step teorico
+figure(fig_step_teorico);
+subplot(2,1,1); yline(rad2deg(scale_alpha), 'k--', 'Riferimento'); title('Step Pitch Teorico'); ylabel('Pitch [deg]'); legend(controllerNames);
+subplot(2,1,2); yline(rad2deg(scale_beta), 'k--', 'Riferimento'); title('Step Yaw Teorico'); xlabel('Tempo [s]'); ylabel('Yaw [deg]');
+
+%% ========================================================================
+% 3. VALIDAZIONE IN SIMULINK (TEST DEL FUOCO CON DISTURBI)
+% ========================================================================
+fprintf('\n============================================================\n');
+fprintf(' AVVIO VALIDAZIONE NON LINEARE IN SIMULINK (TEST TUTTI I DISTURBI)\n');
+fprintf('============================================================\n');
+
+% Parametri per far girare Simulink nel caso peggiore
+var_meas_alpha = 0.0625;
+var_meas_beta  = 0.01;
+noise_act_alpha = 1e-6;
+noise_act_beta  = 1e-6;
+amp_aero_alpha = 0.005;
+amp_aero_beta  = 0.002;
+t_stop = 200; 
+
+% Prepara i workspace per Simulink
+assignin('base', 'var_meas_alpha', var_meas_alpha);
+assignin('base', 'var_meas_beta', var_meas_beta);
+assignin('base', 'noise_act_alpha', noise_act_alpha);
+assignin('base', 'noise_act_beta', noise_act_beta);
+assignin('base', 'amp_aero_alpha', amp_aero_alpha);
+assignin('base', 'amp_aero_beta', amp_aero_beta);
+
+% Scegliamo di validare HINFSYN (puoi cambiare in K_mix se preferisci)
+K = K_hinfsyn; 
+assignin('base', 'K', K);
+
+    simOut = sim(model_name, 'StopTime', num2str(t_stop));
+    
+    % Estrazione Dati dai blocchi "To Workspace"
+    t_sim = simOut.tout;
+    alpha_sim = simOut.get('out.alpha_hinf_int');
+    beta_sim  = simOut.get('out.beta_hinf_int');
+    u_cmd_sim = simOut.get('out.u_cmd_hinf');
+    
+    % Gestione timeseries vs array
+    if isa(alpha_sim, 'timeseries'), alpha_sim = alpha_sim.Data; beta_sim = beta_sim.Data; end
+    if isa(u_cmd_sim, 'timeseries'), u_cmd_sim = u_cmd_sim.Data; end
+    
+    % Plot dei risultati di Simulink
+    fig_sim = figure('Name', 'Validazione Simulink (Disturbi + Rumore)', 'Position', [100 100 900 600]);
+    
+    % 1. Plot Inseguimento Traiettoria
+    subplot(2,1,1);
+    plot(t_sim, alpha_sim, 'LineWidth', 1.2); hold on; grid on;
+    plot(t_sim, beta_sim, 'LineWidth', 1.2);
+    yline(0.05, 'b--', 'Rif Alpha'); yline(0, 'r--', 'Rif Beta');
+    % Evidenzia istante ingresso disturbo
+    xline(10, 'k:', 'Ingresso Disturbo Aero', 'LabelVerticalAlignment', 'bottom'); 
+    title('Uscite Impianto (Simulink con tutti i disturbi attivi)');
+    ylabel('Angoli [rad]'); legend('\alpha (Pitch)', '\beta (Yaw)', 'Location', 'best');
+    
+    % 2. Plot Sforzo di Controllo (Richiesto per saturazioni)
+    subplot(2,1,2);
+    plot(t_sim, u_cmd_sim(:,1), 'LineWidth', 1.2); hold on; grid on;
+    plot(t_sim, u_cmd_sim(:,2), 'LineWidth', 1.2);
+    yline(2.5, 'r--', 'Sat. Max'); yline(-0.5, 'r:', 'Sat. Min (F1)'); yline(-2.5, 'r--', 'Sat. Min (F2)');
+    title('Sforzo di Controllo Comandato (u\_cmd)');
+    xlabel('Tempo [s]'); ylabel('Forza [N]'); legend('Comando F1', 'Comando F2', 'Location', 'best');
+    
+    fprintf(' -> Simulazione completata. Grafici generati con successo.\n');
+    disp('============================================================');

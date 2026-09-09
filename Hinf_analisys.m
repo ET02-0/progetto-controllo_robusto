@@ -1,101 +1,146 @@
 %% ========================================================================
-% ANALISI NOMINALE H-INFINITY E CONFRONTO CONTROLLORI
+% ANALISI COMPLETA H-INFINITY: TEORIA + VALIDAZIONE SIMULINK
 % ========================================================================
+close all; clc; 
+
 disp('============================================================');
-disp(' ANALISI PRESTAZIONI: TEMPO E FREQUENZA');
+disp(' AVVIO ANALISI COMPLETA H-INFINITY');
 disp('============================================================');
 
-% 1. Caricamento Dati
+%% 1. CARICAMENTO DATI E CONFIGURAZIONE
+% Carica il workspace e tutti i controllori (Full-order e Struct)
 load('HINF_workspace.mat');
-load('HINF_controllers_full.mat');
-load('HINF_controllers_struct.mat');
+load('HINF_controllers_full.mat'); 
+load('HINF_controllers_struct.mat'); 
 
 I2 = eye(2);
-tStep = 0:0.01:15; % Vettore di tempo per la simulazione
+omegaHinf = logspace(-2, 3, 500);
+tStep = 0:0.01:15; % Orizzonte temporale per step teorico
 
-% Organizzazione dei controllori
-controllersScaled = {K_mix_scaled, K_hinfsyn_scaled, K_struct_scaled};
-controllersPhysical = {K_mix, K_hinfsyn, K_struct};
-controllerNames = {'Mixsyn (Full)', 'Hinfsyn (Full)', 'Hinfstruct (PID)'};
+% Lista controllori da analizzare (incluso hinfstruct)
+controllersScaled = {K_hinfsyn_scaled, K_mix_scaled, K_struct_scaled};
+controllersPhysical = {K_hinfsyn, K_mix, K_struct};
+controllerNames = {'Hinfsyn', 'Mixsyn', 'Hinfstruct'};
 nContr = length(controllerNames);
 
-% Array per salvare le metriche temporali
-pitchSettling = zeros(nContr,1); pitchOvershoot = zeros(nContr,1);
-yawSettling = zeros(nContr,1);   yawOvershoot = zeros(nContr,1);
-
-% Figure per le risposte al gradino
-fig_pitch = figure('Name','H-infinity - Pitch Tracking'); hold on; grid on;
-fig_yaw   = figure('Name','H-infinity - Yaw Tracking'); hold on; grid on;
-
-% Figure per l'analisi in frequenza
+% Figure
 fig_S  = figure('Name','Funzione di Sensibilità S'); hold on; grid on;
-fig_KS = figure('Name','Sensibilità del Controllo KS'); hold on; grid on;
+fig_KS = figure('Name','Sforzo di Controllo KS'); hold on; grid on;
 fig_T  = figure('Name','Sensibilità Complementare T'); hold on; grid on;
+fig_step_teorico = figure('Name','Step Risposta Teorica (Lineare)'); 
 
-%% 2. ITERAZIONE SUI CONTROLLORI E CALCOLO
+%% ========================================================================
+% 2. ANALISI TEORICA (FREQUENZA E TEMPO)
+% ========================================================================
 for k = 1:nContr
     Ks = controllersScaled{k};
     Kp = controllersPhysical{k};
+    name = controllerNames{k};
     
-    % --- Analisi in Frequenza (Modello Scalato) ---
+    fprintf('\n---> ANALISI CONTROLLORE: %s <---\n', upper(name));
+    
+    % --- LOOP NORMALIZZATO ---
     Ls = G_scaled * Ks;
     Ss = minreal(feedback(I2, Ls), 1e-7);
     Ts = minreal(feedback(Ls, I2), 1e-7);
     KSs = minreal(Ks * Ss, 1e-7);
     
-    % Plot Valori Singolari
-    figure(fig_S);  sigma(Ss); 
-    figure(fig_KS); sigma(KSs);
-    figure(fig_T);  sigma(Ts);
+    % Plot Frequenziali
+    figure(fig_S);  sigma(Ss, omegaHinf); 
+    figure(fig_KS); sigma(KSs, omegaHinf);
+    figure(fig_T);  sigma(Ts, omegaHinf);
     
-    % --- Analisi Temporale (Modello Fisico) ---
+    % --- CALCOLO MARGINI ROBUSTI (Diagnostica Veloce) ---
+    polesNom = pole(Ts);
+    if all(real(polesNom) < 0), disp(' [PASS] Nominal Stability (NS)'); else, disp(' [FAIL] Nominal Stability (NS)'); end
+    
+    gammaNom = hinfnorm(minreal([WS*Ss; WU*KSs; WT*Ts], 1e-7));
+    if gammaNom < 1, fprintf(' [PASS] Nominal Performance (NP) - Gamma = %.3f\n', gammaNom); else, fprintf(' [FAIL] Nominal Performance (NP) - Gamma = %.3f\n', gammaNom); end
+    
+    Lunc = G_uncertain_scaled * Ks;
+    [stabMargin, ~] = robstab(feedback(Lunc, I2), robOptions('Display','off'));
+    if stabMargin.LowerBound > 1, fprintf(' [PASS] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound); else, fprintf(' [FAIL] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound); end
+    
+    [wcGain, ~] = wcgain([WS*feedback(I2, Lunc); WU*(Ks*feedback(I2, Lunc)); WT*feedback(Lunc, I2)], wcOptions('Display','off'));
+    if wcGain.UpperBound < 1, fprintf(' [PASS] Robust Performance (RP) - Worst Gain = %.3f\n', wcGain.UpperBound); else, fprintf(' [FAIL] Robust Performance (RP) - Worst Gain = %.3f\n', wcGain.UpperBound); end
+
+    % --- ANALISI TEMPORALE TEORICA ---
     Lp = G_nominal * Kp;
     Tp = minreal(feedback(Lp, I2), 1e-7);
     
-    % Gradino su Pitch (alpha)
-    [y_pitch, ~] = step(Tp(1,1) * scale_alpha, tStep);
-    figure(fig_pitch); plot(tStep, rad2deg(y_pitch), 'LineWidth', 1.5);
-    info_p = stepinfo(y_pitch, tStep, scale_alpha, 'SettlingTimeThreshold', 0.02);
-    pitchSettling(k) = info_p.SettlingTime;
-    pitchOvershoot(k) = info_p.Overshoot;
+    figure(fig_step_teorico);
+    subplot(2,1,1); hold on; grid on;
+    [y_pitch, t_p] = step(Tp(1,1) * scale_alpha, tStep);
+    plot(t_p, rad2deg(y_pitch), 'LineWidth', 1.5);
     
-    % Gradino su Yaw (beta)
-    [y_yaw, ~] = step(Tp(2,2) * scale_beta, tStep);
-    figure(fig_yaw); plot(tStep, rad2deg(y_yaw), 'LineWidth', 1.5);
-    info_y = stepinfo(y_yaw, tStep, scale_beta, 'SettlingTimeThreshold', 0.02);
-    yawSettling(k) = info_y.SettlingTime;
-    yawOvershoot(k) = info_y.Overshoot;
+    subplot(2,1,2); hold on; grid on;
+    [y_yaw, t_y] = step(Tp(2,2) * scale_beta, tStep);
+    plot(t_y, rad2deg(y_yaw), 'LineWidth', 1.5);
 end
 
-%% 3. COMPLETAMENTO GRAFICI FREQUENZIALI
-omegaHinf = logspace(-2, 3, 500);
+% Aggiunta dei limiti di specifica sui grafici frequenziali
+figure(fig_S); sigma(inv(WS), omegaHinf, 'k--'); title('Sensibilità S(j\omega)'); legend([controllerNames, 'W_S^{-1}']);
+figure(fig_KS); sigma(inv(WU), omegaHinf, 'k--'); title('Sensibilità Controllo KS(j\omega)'); legend([controllerNames, 'W_U^{-1}']);
+figure(fig_T); sigma(inv(WT), omegaHinf, 'k--'); title('Sensibilità Complementare T(j\omega)'); legend([controllerNames, 'W_T^{-1}']);
 
-figure(fig_S); 
-sigma(inv(WS), omegaHinf, 'k--'); 
-title('Sensibilità S(j\omega)'); legend([controllerNames, 'W_S^{-1}']);
+% Finiture grafici teorici
+figure(fig_step_teorico);
+subplot(2,1,1); yline(rad2deg(scale_alpha), 'k--', 'Riferimento'); title('Step Pitch Teorico'); ylabel('Pitch [deg]'); legend(controllerNames);
+subplot(2,1,2); yline(rad2deg(scale_beta), 'k--', 'Riferimento'); title('Step Yaw Teorico'); xlabel('Tempo [s]'); ylabel('Yaw [deg]');
 
-figure(fig_KS); 
-sigma(inv(WU), omegaHinf, 'k--'); 
-title('Sensibilità Controllo KS(j\omega)'); legend([controllerNames, 'W_U^{-1}']);
+%% ========================================================================
+% 3. PLOT DATI SIMULINK (RICERCA VARIABILE 'out' NEL WORKSPACE)
+% ========================================================================
+fprintf('\n============================================================\n');
+fprintf(' RECUPERO DATI SIMULINK NON LINEARI\n');
+fprintf('============================================================\n');
 
-figure(fig_T); 
-sigma(inv(WT), omegaHinf, 'k--'); 
-title('Sensibilità Complementare T(j\omega)'); legend([controllerNames, 'W_T^{-1}']);
-
-%% 4. COMPLETAMENTO GRAFICI TEMPORALI E STAMPA METRICHE
-figure(fig_pitch);
-yline(rad2deg(scale_alpha), 'k--', 'Riferimento');
-title('Inseguimento Gradino Pitch'); xlabel('Tempo [s]'); ylabel('Pitch [deg]');
-legend(controllerNames, 'Location', 'best');
-
-figure(fig_yaw);
-yline(rad2deg(scale_beta), 'k--', 'Riferimento');
-title('Inseguimento Gradino Yaw'); xlabel('Tempo [s]'); ylabel('Yaw [deg]');
-legend(controllerNames, 'Location', 'best');
-
-disp('--- METRICHE TEMPORALI ---');
-for k = 1:nContr
-    fprintf('\n%s:\n', controllerNames{k});
-    fprintf('  Pitch -> Ts = %.2f s, Overshoot = %.2f %%\n', pitchSettling(k), pitchOvershoot(k));
-    fprintf('  Yaw   -> Ts = %.2f s, Overshoot = %.2f %%\n', yawSettling(k), yawOvershoot(k));
+if exist('out', 'var')
+    try
+        % Accesso diretto ai campi dell'oggetto out generato da Simulink
+        t_sim = out.tout;
+        alpha_sim = out.alpha_hinf_int;
+        beta_sim  = out.beta_hinf_int;
+        u_cmd_sim = out.u_cmd_hinf;
+        
+        % Gestione formati (array o timeseries)
+        if isa(alpha_sim, 'timeseries')
+            alpha_sim = alpha_sim.Data;
+            beta_sim  = beta_sim.Data;
+        end
+        if isa(u_cmd_sim, 'timeseries')
+            u_cmd_sim = u_cmd_sim.Data;
+        end
+        
+        % Plot Simulazione
+        fig_sim = figure('Name', 'Validazione Simulink (Dati Non Lineari)', 'Position', [100 100 900 600]);
+        
+        % Subplot 1: Inseguimento Traiettoria
+        subplot(2,1,1);
+        plot(t_sim, alpha_sim, 'LineWidth', 1.2); hold on; grid on;
+        plot(t_sim, beta_sim, 'LineWidth', 1.2);
+        % Riferimenti tipici imposti (modificali se nel tuo Simulink sono diversi)
+        yline(0.05, 'b--', 'Rif Alpha'); yline(0, 'r--', 'Rif Beta');
+        xline(10, 'k:', 'Ingresso Disturbo Aero', 'LabelVerticalAlignment', 'bottom'); 
+        title('Uscite Impianto - Non Lineare (Simulink)');
+        ylabel('Angoli [rad]'); legend('\alpha (Pitch)', '\beta (Yaw)', 'Location', 'best');
+        
+        % Subplot 2: Sforzo di Controllo e Limiti Attuatori
+        subplot(2,1,2);
+        plot(t_sim, u_cmd_sim(:,1), 'LineWidth', 1.2); hold on; grid on;
+        plot(t_sim, u_cmd_sim(:,2), 'LineWidth', 1.2);
+        yline(2.5, 'r--', 'Sat. Max'); yline(-0.5, 'r:', 'Sat. Min (F1)'); yline(-2.5, 'r--', 'Sat. Min (F2)');
+        title('Sforzo di Controllo Comandato (u\_cmd)');
+        xlabel('Tempo [s]'); ylabel('Forza [N]'); legend('Comando F1', 'Comando F2', 'Location', 'best');
+        
+        fprintf(' -> Dati trovati e grafici di validazione generati con successo.\n');
+        
+    catch ME
+        fprintf('\n [ERRORE LETTURA DATI SIMULINK]: %s\n', ME.message);
+        disp('Assicurati che i blocchi "To Workspace" salvino i dati come alpha_hinf_int, beta_hinf_int e u_cmd_hinf.');
+    end
+else
+    disp(' [AVVISO] Variabile "out" non trovata nel workspace.');
+    disp(' Per vedere i grafici non lineari, esegui il modello Simulink prima di lanciare questo script.');
 end
+disp('============================================================');

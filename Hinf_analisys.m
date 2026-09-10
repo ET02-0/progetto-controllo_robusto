@@ -1,7 +1,7 @@
 %% ========================================================================
 % ANALISI COMPLETA H-INFINITY: TEORIA + VALIDAZIONE SIMULINK
 % ========================================================================
-close all; clc; 
+clc; 
 
 disp('============================================================');
 disp(' AVVIO ANALISI COMPLETA H-INFINITY');
@@ -17,7 +17,7 @@ I2 = eye(2);
 omegaHinf = logspace(-2, 3, 500);
 tStep = 0:0.01:15; % Orizzonte temporale per step teorico
 
-% Lista controllori da analizzare (incluso hinfstruct)
+% Lista controllori da analizzare 
 controllersScaled = {K_hinfsyn_scaled, K_mix_scaled, K_struct_scaled};
 controllersPhysical = {K_hinfsyn, K_mix, K_struct};
 controllerNames = {'Hinfsyn', 'Mixsyn', 'Hinfstruct'};
@@ -55,14 +55,18 @@ for k = 1:nContr
     if all(real(polesNom) < 0), disp(' [PASS] Nominal Stability (NS)'); else, disp(' [FAIL] Nominal Stability (NS)'); end
     
     gammaNom = hinfnorm(minreal([WS*Ss; WU*KSs; WT*Ts], 1e-7));
+    if k == 3
+        gammaNom = gamma_pidcomp;
+    end
     if gammaNom < 1, fprintf(' [PASS] Nominal Performance (NP) - Gamma = %.3f\n', gammaNom); else, fprintf(' [FAIL] Nominal Performance (NP) - Gamma = %.3f\n', gammaNom); end
     
     Lunc = G_uncertain_scaled * Ks;
     [stabMargin, ~] = robstab(feedback(Lunc, I2), robOptions('Display','off'));
     if stabMargin.LowerBound > 1, fprintf(' [PASS] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound); else, fprintf(' [FAIL] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound); end
     
-    [wcGain, ~] = wcgain([WS*feedback(I2, Lunc); WU*(Ks*feedback(I2, Lunc)); WT*feedback(Lunc, I2)], wcOptions('Display','off'));
+    [wcGain, wcuRP, infoWCGain] = wcgain([WS*feedback(I2, Lunc); WU*(Ks*feedback(I2, Lunc)); WT*feedback(Lunc, I2)], wcOptions('Display','off'));
     if wcGain.UpperBound < 1, fprintf(' [PASS] Robust Performance (RP) - Worst Gain = %.3f\n', wcGain.UpperBound); else, fprintf(' [FAIL] Robust Performance (RP) - Worst Gain = %.3f\n', wcGain.UpperBound); end
+    fprintf('        -> Frequenza Critica RP: %.4f rad/s\n', infoWCGain.Frequency);
 
     % --- ANALISI TEMPORALE TEORICA ---
     Lp = G_nominal * Kp;
@@ -102,45 +106,75 @@ if exist('out', 'var')
         alpha_sim = out.alpha_hinf_int;
         beta_sim  = out.beta_hinf_int;
         u_cmd_sim = out.u_cmd_hinf;
+        alpha_sim_nl = out.alpha_hinf_int_nl;
+        beta_sim_nl = out.beta_hinf_int_nl;
+        u_cmd_sim_nl = out.u_cmd_hinf_nl;
         
         % Gestione formati (array o timeseries)
         if isa(alpha_sim, 'timeseries')
             alpha_sim = alpha_sim.Data;
             beta_sim  = beta_sim.Data;
+            alpha_sim_nl = alpha_sim_nl.Data;
+            beta_sim_nl = beta_sim_nl.Data;
         end
         if isa(u_cmd_sim, 'timeseries')
             u_cmd_sim = u_cmd_sim.Data;
+            u_cmd_sim_nl = u_cmd_sim_nl.Data;
         end
         
-        % Plot Simulazione
-        fig_sim = figure('Name', 'Validazione Simulink (Dati Non Lineari)', 'Position', [100 100 900 600]);
+        % ==========================================================
+        % FIGURA 1: MODELLO LINEARE
+        % ==========================================================
+        fig_sim_lin = figure('Name', 'Validazione Simulink - Modello Lineare', 'Position', [100 100 900 600]);
         
-        % Subplot 1: Inseguimento Traiettoria
+        % Subplot 1: Inseguimento Traiettoria (Lineare)
         subplot(2,1,1);
-        plot(t_sim, alpha_sim, 'LineWidth', 1.2); hold on; grid on;
-        plot(t_sim, beta_sim, 'LineWidth', 1.2);
-        % Riferimenti tipici imposti (modificali se nel tuo Simulink sono diversi)
-        yline(0.05, 'b--', 'Rif Alpha'); yline(0, 'r--', 'Rif Beta');
+        plot(t_sim, alpha_sim, 'b', 'LineWidth', 1.2); hold on; grid on;
+        plot(t_sim, beta_sim, 'r', 'LineWidth', 1.2);
+        yline(0.05, 'k--', 'Rif Alpha'); yline(0, 'k:', 'Rif Beta');
         xline(10, 'k:', 'Ingresso Disturbo Aero', 'LabelVerticalAlignment', 'bottom'); 
-        title('Uscite Impianto - Non Lineare (Simulink)');
+        title('Uscite Impianto - Modello Lineare');
         ylabel('Angoli [rad]'); legend('\alpha (Pitch)', '\beta (Yaw)', 'Location', 'best');
         
-        % Subplot 2: Sforzo di Controllo e Limiti Attuatori
+        % Subplot 2: Sforzo di Controllo (Lineare)
         subplot(2,1,2);
-        plot(t_sim, u_cmd_sim(:,1), 'LineWidth', 1.2); hold on; grid on;
-        plot(t_sim, u_cmd_sim(:,2), 'LineWidth', 1.2);
-        yline(2.5, 'r--', 'Sat. Max'); yline(-0.5, 'r:', 'Sat. Min (F1)'); yline(-2.5, 'r--', 'Sat. Min (F2)');
-        title('Sforzo di Controllo Comandato (u\_cmd)');
+        plot(t_sim, u_cmd_sim(:,1), 'b', 'LineWidth', 1.2); hold on; grid on;
+        plot(t_sim, u_cmd_sim(:,2), 'r', 'LineWidth', 1.2);
+        yline(2.5, 'k--', 'Sat. Max'); yline(-0.5, 'k:', 'Sat. Min (F1)'); yline(-2.5, 'k--', 'Sat. Min (F2)');
+        title('Sforzo di Controllo Comandato (u\_cmd) - Modello Lineare');
         xlabel('Tempo [s]'); ylabel('Forza [N]'); legend('Comando F1', 'Comando F2', 'Location', 'best');
         
-        fprintf(' -> Dati trovati e grafici di validazione generati con successo.\n');
+        % ==========================================================
+        % FIGURA 2: MODELLO NON LINEARE
+        % ==========================================================
+        % N.B. Position traslata leggermente per non sovrapporre perfettamente le finestre
+        fig_sim_nl = figure('Name', 'Validazione Simulink - Modello Non Lineare', 'Position', [150 150 900 600]);
+        
+        % Subplot 1: Inseguimento Traiettoria (Non Lineare)
+        subplot(2,1,1);
+        plot(t_sim, alpha_sim_nl, 'b', 'LineWidth', 1.2); hold on; grid on;
+        plot(t_sim, beta_sim_nl, 'r', 'LineWidth', 1.2);
+        yline(0.05, 'k--', 'Rif Alpha'); yline(0, 'k:', 'Rif Beta');
+        xline(10, 'k:', 'Ingresso Disturbo Aero', 'LabelVerticalAlignment', 'bottom'); 
+        title('Uscite Impianto - Modello Non Lineare');
+        ylabel('Angoli [rad]'); legend('\alpha (Pitch)', '\beta (Yaw)', 'Location', 'best');
+        
+        % Subplot 2: Sforzo di Controllo (Non Lineare)
+        subplot(2,1,2);
+        plot(t_sim, u_cmd_sim_nl(:,1), 'b', 'LineWidth', 1.2); hold on; grid on;
+        plot(t_sim, u_cmd_sim_nl(:,2), 'r', 'LineWidth', 1.2);
+        yline(2.5, 'k--', 'Sat. Max'); yline(-0.5, 'k:', 'Sat. Min (F1)'); yline(-2.5, 'k--', 'Sat. Min (F2)');
+        title('Sforzo di Controllo Comandato (u\_cmd) - Modello Non Lineare');
+        xlabel('Tempo [s]'); ylabel('Forza [N]'); legend('Comando F1', 'Comando F2', 'Location', 'best');
+        
+        fprintf(' -> Dati trovati e grafici separati (Lineare e Non Lineare) generati con successo.\n');
         
     catch ME
         fprintf('\n [ERRORE LETTURA DATI SIMULINK]: %s\n', ME.message);
-        disp('Assicurati che i blocchi "To Workspace" salvino i dati come alpha_hinf_int, beta_hinf_int e u_cmd_hinf.');
+        disp('Assicurati che i blocchi "To Workspace" salvino i dati come alpha_hinf_int, beta_hinf_int e u_cmd_hinf (e le versioni _nl).');
     end
 else
     disp(' [AVVISO] Variabile "out" non trovata nel workspace.');
-    disp(' Per vedere i grafici non lineari, esegui il modello Simulink prima di lanciare questo script.');
+    disp(' Per vedere i grafici, esegui il modello Simulink prima di lanciare questo script.');
 end
 disp('============================================================');

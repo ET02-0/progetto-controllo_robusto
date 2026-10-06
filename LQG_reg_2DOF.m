@@ -14,6 +14,10 @@ disp(rank(M))
 disp(size(M,1))
 tzero(P_ext)
 
+n_ext = size(A_ext,1);
+m     = size(B_ext,2);
+c     = size(C_ext,1);
+
 
 disp('Dimensioni modello esteso:')
 fprintf('Stati   = %d\n',n_ext)
@@ -52,7 +56,6 @@ rank_obs = rank(obsv(A_ext,C_ext));
 
 fprintf('Osservabilita LQG: %d/%d\n',...
     rank_obs,n_ext);
-
 
 %% -------------------------------------------------
 % 8) Pesi LQR (Regola di Bryson + Smorzamento)
@@ -102,30 +105,19 @@ disp('Guadagno LQR calcolato')
 
 Gk = B_ext;
 
-W = diag([
-    0.001
-    0.001
-]);
+W = diag([0.003 0.0015]);
 
 V = sensor.R;
 
 Qn = W;
 Rn = V;
 
-Estimator = ss(...
-    A_ext,...
-    Gk,...
-    C_ext,...
-    zeros(c,m));
 
-
-[~,Ke,~] = kalman(Estimator,Qn,Rn);
+[Ke,~,~] = lqe(A_ext,Gk,C_ext,W,V);
 
 
 
 disp('Filtro Kalman calcolato')
-
-
 
 %% ==========================================
 % Costruzione VERO controllore LQG a 2-DOF (Senza Integratore)
@@ -150,20 +142,52 @@ Ac_ctrl = A_ext - B_ext*K_lqr - Ke*C_ext;
 % L'ingresso y entra nell'osservatore moltiplicato per Ke
 Bc_ctrl = [B_ext*Kr, Ke]; 
 
-% L'uscita del controllore è la u totale: u = -K_lqr*x_hat + Kr*r
-Cc_ctrl = -K_lqr;
-Dc_ctrl = [Kr, zeros(m,c)]; % Il termine Kr*r passa direttamente all'uscita
 
-% Creazione del blocco
-K_lqg_2dof = ss(Ac_ctrl, Bc_ctrl, Cc_ctrl, Dc_ctrl);
-save('LQG_Controllers.mat','K_lqg_2dof','-append');
+% =========================================================
+% USCITE CONTROLLore + STIMA DELLO STATO
+% =========================================================
+% Uscite:
+% 1-2  -> u1, u2
+% 3-10 -> xhat(1:8)
+
+Cc_ctrl = [
+    -K_lqr;
+    eye(n_ext)
+];
+
+Dc_ctrl = [
+    Kr, zeros(m,c);
+    zeros(n_ext, size(Bc_ctrl,2))
+];
+
+K_lqg_2dof = ss( ...
+    Ac_ctrl, ...
+    Bc_ctrl, ...
+    Cc_ctrl, ...
+    Dc_ctrl);
+
 K_lqg_2dof.InputName = {
-'r_alpha',...
-'r_beta',...
-'y_acc',...
-'m_x',...
-'m_y'};
-K_lqg_2dof.OutputName = {'u1', 'u2'};
+    'r_alpha'
+    'r_beta'
+    'y_acc'
+    'm_x'
+    'm_y'
+};
+
+K_lqg_2dof.OutputName = {
+    'u1'
+    'u2'
+    'alpha_hat'
+    'alphadot_hat'
+    'beta_hat'
+    'betadot_hat'
+    'act1_hat'
+    'act1dot_hat'
+    'act2_hat'
+    'act2dot_hat'
+};
+
+save('LQG_Controllers.mat','K_lqg_2dof','-append');
 
 disp('Controllore LQG 2-DOF creato con successo');
 
@@ -192,8 +216,11 @@ P_monitor.OutputName = {
     'm_y',...
     'alpha',...
     'beta'};
+
+K_lqg_2dof_ctrl = K_lqg_2dof(1:2,:);
+
 CL_monitor = connect(P_monitor,...
-                     K_lqg_2dof,...
+                     K_lqg_2dof_ctrl,...
                      {'r_alpha','r_beta'},...
                      {'alpha','beta'});
 CL_monitor.OutputName
@@ -256,7 +283,7 @@ P_dist.OutputName = {
 
 CL_dist = connect( ...
     P_dist, ...
-    K_lqg_2dof, ...
+    K_lqg_2dof_ctrl, ...
     {'r_alpha','r_beta','d_alpha','d_beta'}, ...
     {'delta_alpha','delta_beta'});
 
@@ -321,7 +348,7 @@ P_full_nom.OutputName = {
 
 
 CL_nom = connect(P_full_nom,...
-                 K_lqg_2dof,...
+                 K_lqg_2dof_ctrl,...
                  {'r_alpha','r_beta'},...
                  {'y_acc','m_x','m_y'});
 
@@ -366,19 +393,13 @@ P_full_unc.OutputName = {
 'm_x',...
 'm_y'};
 
-K_lqg_2dof.InputName = {
-'r_alpha',...
-'r_beta',...
-'y_acc',...
-'m_x',...
-'m_y'};
-K_lqg_2dof.OutputName = {'u1','u2'};
 
 
 CL_unc = connect(P_full_unc,...
-                 K_lqg_2dof,...
+                 K_lqg_2dof_ctrl,...
                  {'r_alpha','r_beta'},...
                  {'y_acc','m_x','m_y'});
+
 %% ==========================================
 % Analisi robustezza
 % ==========================================

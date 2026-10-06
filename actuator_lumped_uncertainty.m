@@ -195,11 +195,21 @@ Gact_lumped.OutputName = {
 %% ========================================================================
 % 7. RIDUZIONE DELLE INCERTEZZE MECCANICHE
 % ========================================================================
-
-% Per la mu-synthesis manteniamo solo le incertezze meccaniche
-% che scegliamo di includere nel problema finale.
 %
-% N.B. Queste sono esattamente le ureal definite nel dataset_elicottero.
+% Per la mu-synthesis manteniamo soltanto:
+%
+%   J_alpha
+%   l
+%
+% Le altre incertezze meccaniche vengono fissate al valore nominale:
+%
+%   Jy
+%   Jz
+%   m
+%   eps_p
+%   eps_y
+%
+% ================================================================
 
 Pmech_reduced = P_unc;
 
@@ -207,7 +217,8 @@ parametersToNominal = {
     'Jy'
     'Jz'
     'm'
-    'l'
+    'eps_p'
+    'eps_y'
 };
 
 for k = 1:numel(parametersToNominal)
@@ -231,29 +242,56 @@ for k = 1:numel(parametersToNominal)
 
 end
 
+fprintf('\n============================================================\n');
+fprintf('INCERTEZZE DOPO LA RIDUZIONE MECCANICA\n');
+fprintf('============================================================\n');
+
+disp(Pmech_reduced.Uncertainty);
+
+%% ========================================================================
+% 7.1 SEMPLIFICAZIONE DELLA RAPPRESENTAZIONE LFT
+% ========================================================================
+%
+% Riduciamo le occorrenze ripetute delle incertezze mantenendo:
+%
+%   J_alpha
+%   l
+%
+% come parametri incerti.
+%
+% La semplificazione non modifica nominalmente il modello e viene
+% utilizzata solo per ottenere una rappresentazione LFT piu' compatta
+% per la mu-synthesis.
+
+Pmech_reduced = ...
+    simplify( ...
+        Pmech_reduced, ...
+        'full');
+
+fprintf('\n============================================================\n');
+fprintf('INCERTEZZE DOPO SEMPLIFICAZIONE LFT\n');
+fprintf('============================================================\n');
+
+[~,~,blk_mech] = lftdata(Pmech_reduced);
+
+for k = 1:numel(blk_mech)
+
+    fprintf('%-12s -> %2d occorrenze\n', ...
+        blk_mech(k).Name, ...
+        blk_mech(k).Occurrences);
+
+end
+
 %% ========================================================================
 % 8. ESTRAZIONE DELLE USCITE ANGOLARI
 % ========================================================================
-
-% P_unc è il modello con uscite:
-%
-%   delta_y_acc
-%   delta_mx
-%   delta_my
-%
-% Per la mu-synthesis ci servono soltanto:
-%
-%   delta_alpha
-%   delta_beta
-%
-% quindi costruiamo direttamente il modello angolare.
 
 C_angles = [
     1 0 0 0;
     0 0 1 0
 ];
 
-Pq_mech_reduced = ss( ...
+Pq_mech_reduced = uss( ...
     Pmech_reduced.A, ...
     Pmech_reduced.B, ...
     C_angles, ...
@@ -286,7 +324,11 @@ G_uncertain_lumped.OutputName = {
     'alpha'
     'beta'
 };
+fprintf('\n============================================================\n');
+fprintf('INCERTEZZE FINALI G UNCERTAIN LUMPED\n');
+fprintf('============================================================\n');
 
+disp(G_uncertain_lumped.Uncertainty);
 %% ========================================================================
 % 10. NORMALIZZAZIONE
 % ========================================================================
@@ -300,6 +342,11 @@ G_uncertain_lumped_scaled = ...
     G_uncertain_lumped * ...
     Du;
 
+G_uncertain_lumped_scaled = ...
+    simplify( ...
+        G_uncertain_lumped_scaled, ...
+        'full');
+
 G_uncertain_lumped_scaled.InputName = {
     'ubar1'
     'ubar2'
@@ -309,6 +356,20 @@ G_uncertain_lumped_scaled.OutputName = {
     'alpha_bar'
     'beta_bar'
 };
+
+fprintf('\n============================================================\n');
+fprintf('LFT FINALE MODELLO PER MU-SYNTHESIS\n');
+fprintf('============================================================\n');
+
+[~,~,blk_final] = lftdata(G_uncertain_lumped_scaled);
+
+for k = 1:numel(blk_final)
+
+    fprintf('%-12s -> %2d occorrenze\n', ...
+        blk_final(k).Name, ...
+        blk_final(k).Occurrences);
+
+end
 
 %% ========================================================================
 % 11. VERIFICA
@@ -323,6 +384,8 @@ G_uncertain_lumped
 
 disp('G_uncertain_lumped_scaled =');
 G_uncertain_lumped_scaled
+
+
 
 %% ========================================================================
 % 12. SALVATAGGIO

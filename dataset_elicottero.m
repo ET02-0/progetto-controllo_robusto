@@ -6,6 +6,21 @@ clear all; close all; clc;
 disp('Configurazione parametri Elicottero 2DoF (Controllo Robusto)...');
 which uss -all
 
+% ================================================================
+% IMPOSTAZIONE GRAFICA PER LA RELAZIONE
+% ================================================================
+
+set(groot, ...
+    'defaultFigureColor','w', ...
+    'defaultAxesColor','w', ...
+    'defaultAxesXColor','k', ...
+    'defaultAxesYColor','k', ...
+    'defaultAxesZColor','k', ...
+    'defaultAxesGridColor',[0.75 0.75 0.75], ...
+    'defaultTextColor','k', ...
+    'defaultAxesBox','on', ...
+    'defaultAxesFontSize',11);
+
 %% 1. PARAMETRI NOMINALI (Perfettamente noti)
 p.J_y = 0.00023; 
 p.J_z = 0.00364; 
@@ -76,30 +91,54 @@ tau_d_u   = ureal('tau_d',0.02,'Percentage',20);
 Jy_u = ureal('Jy',0.00023,'Percentage',5);
 Jz_u = ureal('Jz',0.00364,'Percentage',5);
 m_u  = ureal('m',0.2,'Percentage',5);
+omega_n_u = ureal('omega_n',30,'Percentage',10);
 
 %% 3. DINAMICA DEGLI ATTUATORI
-omega_n = 30;   
-zeta    = 0.7;     
 
-% Vettori per il secondo ordine
+omega_n = 30;
+zeta    = 0.7;
+
+% ================================================================
+% ATTUATORE NOMINALE
+% ================================================================
+
 num_2nd = omega_n^2;
 den_2nd = [1, 2*zeta*omega_n, omega_n^2];
 
+G_act_2nd = tf(num_2nd,den_2nd);
+
+
+% Ritardo nominale tramite Padé del primo ordine
 
 num_pade_nom = [-tau_d_nom/2 1];
-den_pade_nom = [tau_d_nom/2 1];
+den_pade_nom = [ tau_d_nom/2 1];
 
 G_delay_pade_nom = tf(num_pade_nom,den_pade_nom);
 
+G_act_nom = G_act_2nd * G_delay_pade_nom;
+
+
+% ================================================================
+% ATTUATORE INCERTO
+%
+% omega_n : +/-10%
+% tau_d   : +/-20%
+% zeta    : nominale
+% ================================================================
+
+s = tf('s');
+
+G_act_2nd_unc = ...
+    omega_n_u^2 / ...
+    (s^2 + 2*zeta*omega_n_u*s + omega_n_u^2);
 
 num_pade_unc = [-tau_d_u/2 1];
-den_pade_unc = [tau_d_u/2 1];
+den_pade_unc = [ tau_d_u/2 1];
 
 G_delay_pade_unc = tf(num_pade_unc,den_pade_unc);
 
-G_act_2nd = tf(num_2nd,den_2nd);
-G_act_nom = G_act_2nd*G_delay_pade_nom;
-G_actuator_unc = G_act_2nd*G_delay_pade_unc;
+G_actuator_unc = ...
+    G_act_2nd_unc * G_delay_pade_unc;
 
 %% ========================================================================
 % 4. STRUTTURE PER SIMULINK (Attuatori, Sensori, Disturbi, Riferimenti)
@@ -416,6 +455,22 @@ Bd_nom = [
     0                 0;
     0                 1/Jbeta_nom
 ];
+
+%% ==========================================
+% ANALISI REIEZIONE DISTURBO
+% Trasferimento d_beta -> delta_beta
+% LQG 2-DOF senza integratore
+% ==========================================
+
+% Gli attuatori sono già inclusi in A_ext/B_ext.
+% Aggiungiamo al modello esteso gli ingressi di disturbo
+% d_alpha e d_beta direttamente sulla dinamica dell'elicottero.
+
+Bd_ext = [
+    Bd_nom
+    zeros(4,2)
+];
+
 
 B_ext_nom = [B_nom Bd_nom];
 

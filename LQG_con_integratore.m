@@ -68,11 +68,11 @@ if rank_ctrb < size(Aa,1)
 
     fprintf("Modo non controllabile:\n")
 
-    [V,D]=eig(Aa);
+    [L,D]=eig(Aa);
 
     for i=1:length(diag(D))
         if abs(real(D(i)))<1e-8
-            disp(V(:,i))
+            disp(L(:,i))
         end
     end
 
@@ -101,7 +101,7 @@ end
 eig(Aa)
 Co = ctrb(Aa,Ba);
 
-[U,S,V]=svd(Co);
+[U,S,Vsvd]=svd(Co);
 
 disp('Singular values controllabilità:')
 disp(diag(S))
@@ -120,8 +120,6 @@ fprintf('Osservabilita: %d/%d\n',...
 if rank_obs ~= size(A_ext,1)
     warning('Sistema non completamente osservabile')
 end
-
-
 
 %% -------------------------------------------------
 % 8) Pesi LQR
@@ -170,12 +168,18 @@ disp('Guadagno LQR calcolato')
 % --------------------------------------------------
 Gk = B_ext;
 
-W = diag([0.001, 0.001]);
+W = diag([0.003 0.0015]);
+
+V = sensor.R;
+
+Qn = W;
+Rn = V;
+
+
 
 [Ke,~,~] = lqe(A_ext,Gk,C_ext,W,V);
 
 disp('Filtro Kalman calcolato')
-
 
 
 %% -------------------------------------------------
@@ -204,10 +208,14 @@ Bcy = [
 
 
 Cc_ctrl = [
-    -Kri   -Krp
+    -Kri   -Krp;
+    zeros(n_ext,ni)  eye(n_ext)
 ];
 
-Dc_ctrl = zeros(m,ni+c);
+Dc_ctrl = [
+    zeros(m,ni+c);
+    zeros(n_ext,ni+c)
+];
 
 K_lqg_int = ss( ...
     Ac_ctrl, ...
@@ -215,7 +223,6 @@ K_lqg_int = ss( ...
     Cc_ctrl, ...
     Dc_ctrl);
 
-save('LQG_Controllers.mat','K_lqg_int','-append');
 
 K_lqg_int.InputName = {
     'r_alpha'
@@ -227,7 +234,17 @@ K_lqg_int.InputName = {
 K_lqg_int.OutputName = {
     'u1'
     'u2'
+    'alpha_hat'
+    'alphadot_hat'
+    'beta_hat'
+    'betadot_hat'
+    'act1_hat'
+    'act1dot_hat'
+    'act2_hat'
+    'act2dot_hat'
 };
+
+save('LQG_Controllers.mat','K_lqg_int','-append');
 
 disp('==============================================')
 disp(' K_lqg_int creato correttamente')
@@ -251,30 +268,25 @@ Pnom.OutputName = {
     'my'
 };
 
-K = K_lqg_int;
+K_ctrl = K_lqg_int(1:2,:);
 
-
-K.InputName = {
+K_ctrl.InputName = {
     'r_alpha'
-    'r_beta'   % <-- MANCAVA QUESTO
+    'r_beta'
     'y_acc'
     'mx'
     'my'
 };
-K.OutputName = {
+
+K_ctrl.OutputName = {
     'u1'
     'u2'
 };
 
 
-% QUI C'ERA IL SECONDO ERRORE: aggiungi 'r_beta' agli ingressi di connect
-CL_nom = connect(Pnom,K,...
-    {'r_alpha', 'r_beta'},... 
-    {
-    'y_acc'
-    'mx'
-    'my'
-    });
+CL_nom = connect(Pnom,K_ctrl,...
+    {'r_alpha','r_beta'},...
+    {'y_acc','mx','my'});
 
 C_monitor = [
     C_ext;
@@ -296,10 +308,9 @@ P_monitor.OutputName = {
     'delta_beta'
 };
 
-% Aggiungi 'r_beta' anche qui
 CL_monitor = connect(P_monitor,...
-                     K_lqg_int,... 
-                     {'r_alpha','r_beta'},...  
+                     K_ctrl,...
+                     {'r_alpha','r_beta'},...
                      {'delta_alpha','delta_beta'});
 dcgain(CL_nom)
 figure
@@ -358,13 +369,9 @@ Pfull_unc.OutputName = {
     'my'
 };
 
-CL_unc = connect(Pfull_unc,K,...
+CL_unc = connect(Pfull_unc,K_ctrl,...
     {'r_alpha','r_beta'},...
-    {
-    'y_acc'
-    'mx'
-    'my'
-    });
+    {'y_acc','mx','my'});
 
 
 %% ==========================================
@@ -452,7 +459,7 @@ fprintf('Valore finale beta = %.6g rad\n',beta_final)
 fprintf('Massimo |beta|      = %.6g rad\n',beta_max)
 fprintf('RMS beta            = %.6g rad\n',beta_rms)
 
-wcgain(CL_unc)
+%% wcgain(CL_unc)
 
 size(Aa)
 size(Ba)

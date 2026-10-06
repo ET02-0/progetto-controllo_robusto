@@ -46,8 +46,10 @@ Nc = numel(controllers);
 % Plant nominale per NS e NP
 Gnom = G_scaled;
 
-% Plant incerto lumped per RS, RP e analisi mu
-Gunc = G_uncertain_lumped_scaled;
+% Plant incerto non-lumped per RS, RP e analisi mu
+% Incertezze mantenute:
+%   J_alpha, l, omega_n, tau_d
+Gunc = G_unc_mu_scaled;
 
 Gunc.InputName = {
     'u1'
@@ -62,7 +64,7 @@ Gunc.OutputName = {
 % 3. GRIGLIA FREQUENZIALE PER ANALISI MU
 % ========================================================================
 
-omegaAnalysis = omegaWeights
+omegaAnalysis = omegaWeights;
 
 fprintf('\n============================================================\n');
 fprintf('MU ANALYSIS COMPARISON\n');
@@ -173,94 +175,72 @@ for k = 1:Nc
     % =====================================================================
 
     fprintf('\nRunning robstab...\n');
-
-    tic;
-
-    stabMargin = ...
-        robstab(Tunc);
-
-    elapsedRobstab = toc;
-
-    RS_Lower(k) = ...
-        stabMargin.LowerBound;
-
-    RS_Upper(k) = ...
-        stabMargin.UpperBound;
-
-    RS(k) = ...
-        RS_Lower(k) > 1;
-
-    fprintf('robstab completed in %.2f s.\n', ...
-        elapsedRobstab);
-
-    fprintf('RS Lower = %.6f\n', ...
-        RS_Lower(k));
-
-    fprintf('RS Upper = %.6f\n', ...
-        RS_Upper(k));
+    
+    [stabMargin, ~] = robstab(Tunc, robOptions('Display','off'));
+    
+    fprintf('\nRobust Stability:\n');
+    fprintf('  Lower bound = %.4f\n', stabMargin.LowerBound);
+    fprintf('  Upper bound = %.4f\n', stabMargin.UpperBound);
+    
+    if stabMargin.LowerBound > 1
+        fprintf(' [PASS] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound);
+    elseif stabMargin.UpperBound < 1
+        fprintf(' [FAIL] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound);
+    else
+        fprintf('  [INCONCLUSIVE] Intervallo di bound non conclusivo.\n');
+    end
+    
+    RS_Lower(k) = stabMargin.LowerBound;
+    RS_Upper(k) = stabMargin.UpperBound;
+    RS(k)       = RS_Lower(k) > 1;
 
     %% ====================================================================
     % 6.4 ROBUST PERFORMANCE - WCGain
     % =====================================================================
 
     fprintf('\nRunning wcgain...\n');
-
-    tic;
-
-    try
-
-        wcGain = ...
-            wcgain( ...
-                Wunc, ...
-                wcOptsFast);
-
-        fprintf('Standard wcgain successful.\n');
-
-    catch ME
-
-        if contains( ...
-                ME.message, ...
-                'Invalid MU upper bound', ...
-                'IgnoreCase',true)
-
-            fprintf('\n');
-            fprintf('Standard wcgain failed.\n');
-            fprintf('Retrying with MussvOptions = ''a''...\n');
-
-            wcGain = ...
-                wcgain( ...
-                    Wunc, ...
-                    wcOptsAccurate);
-
-            fprintf('Accurate wcgain successful.\n');
-
-        else
-
-            rethrow(ME);
-
-        end
-
+   
+    Kloop = ss(K);
+    Kloop.InputName  = {'e1','e2'};
+    Kloop.OutputName = {'u1','u2'};
+    
+    W_S = ss(WS);
+    W_S.InputName  = {'e1','e2'};
+    W_S.OutputName = {'zS1','zS2'};
+    
+    W_U = ss(WU);
+    W_U.InputName  = {'u1','u2'};
+    W_U.OutputName = {'zU1','zU2'};
+    
+    W_T = ss(WT);
+    W_T.InputName  = {'y1','y2'};
+    W_T.OutputName = {'zT1','zT2'};
+    
+    sum1 = sumblk('e1 = r1 - y1');
+    sum2 = sumblk('e2 = r2 - y2');
+    
+    CL_unc = connect(Gunc, Kloop, W_S, W_U, W_T, sum1, sum2, ...
+        {'r1','r2'}, {'zS1','zS2','zU1','zU2','zT1','zT2'});
+    
+    wgrid = omegaAnalysis;
+    [wcGain, wcuRP] = wcgain(ufrd(CL_unc, wgrid), ...
+        wcOptions('Display','off','MussvOptions','a'));
+    
+    fprintf('\nRobust Performance:\n');
+    fprintf('  Lower bound = %.4f\n', wcGain.LowerBound);
+    fprintf('  Upper bound = %.4f\n', wcGain.UpperBound);
+    
+    if wcGain.UpperBound < 1
+        fprintf('  [PASS] Robust performance garantita.\n');
+    elseif wcGain.LowerBound > 1
+        fprintf('  [FAIL] Robust performance sicuramente violata.\n');
+    else
+        fprintf('  [INCONCLUSIVE] Bound non conclusivi.\n');
     end
-
-    elapsedWcgain = toc;
-
-    fprintf('wcgain completed in %.2f s.\n', ...
-        elapsedWcgain);
-
-    RP_Lower(k) = ...
-        wcGain.LowerBound;
-
-    RP_Upper(k) = ...
-        wcGain.UpperBound;
-
-    RP(k) = ...
-        RP_Upper(k) < 1;
-
-    fprintf('RP Lower = %.6f\n', ...
-        RP_Lower(k));
-
-    fprintf('RP Upper = %.6f\n', ...
-        RP_Upper(k));
+    
+    RP_Lower(k) = wcGain.LowerBound;
+    RP_Upper(k) = wcGain.UpperBound;
+    RP(k)       = RP_Upper(k) < 1;
 
     %% ====================================================================
     % 6.5 DECOMPOSIZIONE LFT

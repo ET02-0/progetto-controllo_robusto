@@ -108,10 +108,22 @@ final_error_beta = ...
 
 %% ==========================================
 % 6. METRICHE DI TRACKING
+%
+% Nel Tipo 2 le metriche vengono calcolate esclusivamente nella
+% fase precedente all'applicazione del disturbo.
+%
+% Rise time:
+%   intervallo 10%-90%.
+%
+% Overshoot:
+%   sovraelongazione rispetto al riferimento.
+%
+% Settling time:
+%   primo istante in cui l'errore entra nella banda del 5%
+%   e la media mobile dell'errore rimane entro tale banda.
 %% ==========================================
 
 t_dist = 10;
-
 
 overshoot_alpha = NaN;
 
@@ -124,17 +136,20 @@ if (tipo_test == 1 || tipo_test == 2) && ...
         abs(r_alpha) > 1e-6
 
 
+    % ----------------------------------------------------------
     % Parte precedente al disturbo
+    % ----------------------------------------------------------
 
-    idx_track = t_alpha <= t_dist;
-
+    idx_track = t_alpha < t_dist;
 
     t_track = t_alpha(idx_track);
 
     alpha_track = alpha_value(idx_track);
 
 
-    % Filtro leggero se presente rumore
+    % ----------------------------------------------------------
+    % Filtro leggero nel caso del Tipo 2
+    % ----------------------------------------------------------
 
     if tipo_test == 2
 
@@ -149,7 +164,9 @@ if (tipo_test == 1 || tipo_test == 2) && ...
     end
 
 
+    % ----------------------------------------------------------
     % Overshoot
+    % ----------------------------------------------------------
 
     overshoot_alpha = max( ...
         0, ...
@@ -157,59 +174,80 @@ if (tipo_test == 1 || tipo_test == 2) && ...
         / abs(r_alpha) * 100);
 
 
-    % Rise / settling
+    % ----------------------------------------------------------
+    % Rise time
+    % ----------------------------------------------------------
 
     info_alpha = stepinfo( ...
         alpha_track_metric, ...
         t_track, ...
         'RiseTimeLimits',[0.1 0.9]);
 
-
     rise_time_alpha = ...
         info_alpha.RiseTime;
 
-    settling_time_alpha = ...
-        info_alpha.SettlingTime;
-
+    % ----------------------------------------------------------
+    % Settling time
+    %
+    % Banda del 10% rispetto al riferimento.
+    % Il settling time e' il primo istante a partire dal quale
+    % la risposta rimane nella banda fino all'applicazione
+    % del disturbo a t = t_dist.
+    % ----------------------------------------------------------
+    
+    settling_band = 0.05 * abs(r_alpha);
+    
+    err_settling = abs(alpha_track - r_alpha);
+    
+    T_hold = 0.5;
+    N_hold = max(1, round(T_hold / mean(diff(t_track))));
+    
+    settling_time_alpha = NaN;
+    
+    for k = 1:(length(t_track)-N_hold+1)
+    
+        finestra = err_settling(k:k+N_hold-1);
+    
+        percentuale_in_banda = ...
+            mean(finestra <= settling_band);
+    
+        if percentuale_in_banda >= 0.90
+    
+            settling_time_alpha = t_track(k);
+            break
+    
+        end
+    
+    end
 end
-
-
 %% ==========================================
 % 7. TEMPO DI RECUPERO
+%
+% Il recupero viene misurato dall'istante di applicazione del
+% disturbo fino al primo istante in cui, dopo essere uscita
+% dalla banda di accettazione, la risposta rientra nella banda
+% e vi rimane per almeno 1 s.
 %% ==========================================
 
 T_rec_alpha = NaN;
-
-T_rec_beta = NaN;
-
+T_rec_beta  = NaN;
 
 peak_alpha_dist = NaN;
-
-peak_beta_dist = NaN;
+peak_beta_dist  = NaN;
 
 
 if tipo_test == 2 || tipo_test == 3
 
-
     t_dist = 10;
 
-
-    % Soglia alpha
+    % ----------------------------------------------------------
+    % SOGLIE
+    % ----------------------------------------------------------
 
     soglia_alpha = deg2rad(0.3);
 
-
-    % Soglia beta
-
-    if tipo_test == 2
-
-        soglia_beta = deg2rad(1.8);
-
-    else
-
-        soglia_beta = deg2rad(0.5);
-
-    end
+    
+    soglia_beta = deg2rad(0.5);
 
 
     finestra_rec = 1.0;
@@ -219,63 +257,60 @@ if tipo_test == 2 || tipo_test == 3
     % ALPHA
     %% --------------------------------------
 
-    idx_post_alpha = ...
-        find(t_alpha >= t_dist);
+    idx_post_alpha = find(t_alpha >= t_dist);
 
+    t_post_alpha = t_alpha(idx_post_alpha);
 
     errore_alpha_post = ...
         abs(alpha_value(idx_post_alpha) - r_alpha);
 
-
-    peak_alpha_dist = ...
-        max(errore_alpha_post);
+    peak_alpha_dist = max(errore_alpha_post);
 
 
-    [peak_alpha_error, iPeakAlphaRel] = ...
-        max(errore_alpha_post);
+    % Individua il primo istante in cui la risposta
+    % esce dalla banda dopo il disturbo
+    idx_fuori_alpha = ...
+        find(errore_alpha_post > soglia_alpha, 1, 'first');
 
 
-    if peak_alpha_error <= soglia_alpha
+    if ~isempty(idx_fuori_alpha)
 
-        T_rec_alpha = 0;
+        % Da questo punto in poi cerchiamo il primo rientro
+        % stabile nella banda per almeno 1 s
+        for k = idx_fuori_alpha:length(t_post_alpha)
+
+            idx_end = find( ...
+                t_post_alpha <= ...
+                t_post_alpha(k) + finestra_rec, ...
+                1, 'last');
+
+            if isempty(idx_end)
+                continue
+            end
+
+            % La finestra deve essere completa
+            if t_post_alpha(idx_end) - ...
+                    t_post_alpha(k) >= finestra_rec
+
+                finestra = ...
+                    errore_alpha_post(k:idx_end);
+
+                if all(finestra <= soglia_alpha)
+
+                    T_rec_alpha = ...
+                        t_post_alpha(k) - t_dist;
+
+                    break
+
+                end
+            end
+        end
 
     else
 
-        error_alpha_from_peak = ...
-            errore_alpha_post(iPeakAlphaRel:end);
-
-
-        t_alpha_from_peak = ...
-            t_alpha( ...
-            idx_post_alpha(iPeakAlphaRel:end));
-
-
-        Nwin_alpha = max( ...
-            1, ...
-            round( ...
-            finestra_rec / mean(diff(t_alpha))));
-
-
-        for k = 1:( ...
-                length(error_alpha_from_peak) ...
-                - Nwin_alpha + 1)
-
-
-            finestra = ...
-                error_alpha_from_peak( ...
-                k:k+Nwin_alpha-1);
-
-
-            if all(finestra <= soglia_alpha)
-
-                T_rec_alpha = ...
-                    t_alpha_from_peak(k) - t_dist;
-
-                break
-
-            end
-
-        end
+        % Il disturbo non porta mai la risposta fuori dalla banda:
+        % non è necessario alcun recupero.
+        T_rec_alpha = 0;
 
     end
 
@@ -284,68 +319,64 @@ if tipo_test == 2 || tipo_test == 3
     % BETA
     %% --------------------------------------
 
-    idx_post_beta = ...
-        find(t_beta >= t_dist);
+    idx_post_beta = find(t_beta >= t_dist);
 
+    t_post_beta = t_beta(idx_post_beta);
 
     errore_beta_post = ...
         abs(beta_value(idx_post_beta) - r_beta);
 
-
-    peak_beta_dist = ...
-        max(errore_beta_post);
+    peak_beta_dist = max(errore_beta_post);
 
 
-    [peak_beta_error, iPeakBetaRel] = ...
-        max(errore_beta_post);
+    % Individua il primo istante in cui la risposta
+    % esce dalla banda dopo il disturbo
+    idx_fuori_beta = ...
+        find(errore_beta_post > soglia_beta, 1, 'first');
 
 
-    if peak_beta_error <= soglia_beta
+    if ~isempty(idx_fuori_beta)
 
-        T_rec_beta = 0;
+        % Da questo punto in poi cerchiamo il primo rientro
+        % stabile nella banda per almeno 1 s
+        for k = idx_fuori_beta:length(t_post_beta)
+
+            idx_end = find( ...
+                t_post_beta <= ...
+                t_post_beta(k) + finestra_rec, ...
+                1, 'last');
+
+            if isempty(idx_end)
+                continue
+            end
+
+            % La finestra deve essere completa
+            if t_post_beta(idx_end) - ...
+                    t_post_beta(k) >= finestra_rec
+
+                finestra = ...
+                    errore_beta_post(k:idx_end);
+
+                if all(finestra <= soglia_beta)
+
+                    T_rec_beta = ...
+                        t_post_beta(k) - t_dist;
+
+                    break
+
+                end
+            end
+        end
 
     else
 
-        error_beta_from_peak = ...
-            errore_beta_post(iPeakBetaRel:end);
-
-
-        t_beta_from_peak = ...
-            t_beta( ...
-            idx_post_beta(iPeakBetaRel:end));
-
-
-        Nwin_beta = max( ...
-            1, ...
-            round( ...
-            finestra_rec / mean(diff(t_beta))));
-
-
-        for k = 1:( ...
-                length(error_beta_from_peak) ...
-                - Nwin_beta + 1)
-
-
-            finestra = ...
-                error_beta_from_peak( ...
-                k:k+Nwin_beta-1);
-
-
-            if all(finestra <= soglia_beta)
-
-                T_rec_beta = ...
-                    t_beta_from_peak(k) - t_dist;
-
-                break
-
-            end
-
-        end
+        % Il disturbo non porta mai la risposta fuori dalla banda:
+        % non è necessario alcun recupero.
+        T_rec_beta = 0;
 
     end
 
 end
-
 
 %% ==========================================
 % 8. STEADY STATE
@@ -532,6 +563,16 @@ if tipo_test == 2
         peak_beta_dist, ...
         rad2deg(peak_beta_dist));
 
+    fprintf( ...
+    'Tempo recupero alpha              = %.4f s\n', ...
+    T_rec_alpha);
+
+
+    fprintf( ...
+        'Tempo recupero beta               = %.4f s\n', ...
+        T_rec_beta);
+
+
 
     fprintf('\n--- PRESTAZIONI A REGIME - ULTIMI 5 s ---\n')
 
@@ -684,89 +725,96 @@ legend( ...
 title(nome)
 
 %% ==========================================
-% 12b-alpha. REIEZIONE DISTURBO ALPHA
+% 12. GRAFICI DISTURBANCE RECOVERY
+%    Solo per tipo_test = 2 oppure 3
 %% ==========================================
-
-figure('Name',[nome ' - Alpha disturbance recovery'])
-
-plot(t_alpha, alpha_value, 'LineWidth', 1.5)
-hold on
-
-yline(r_alpha + soglia_alpha, '--')
-yline(r_alpha - soglia_alpha, '--')
-xline(t_dist, ':')
-
-grid on
-xlabel('Tempo [s]')
-ylabel('\alpha [rad]')
-
-legend('\alpha', ...
-       ['r_\alpha + ' num2str(rad2deg(soglia_alpha)) '°'], ...
-       ['r_\alpha - ' num2str(rad2deg(soglia_alpha)) '°'], ...
-       'Disturbo', ...
-       'Location','best')
-
-title('Reiezione del disturbo su \alpha')
-
-
-%% ==========================================
-% 12. RECUPERO BETA
-%% ==========================================
-
-figure( ...
-    'Name',[nome ' - Beta disturbance recovery'])
-
-
-plot( ...
-    t_beta, ...
-    beta_value, ...
-    'LineWidth',1.5)
-
-hold on
-
 
 if tipo_test == 2 || tipo_test == 3
 
+    %% ------------------------------------------
+    % DISTURBANCE RECOVERY ALPHA
+    %% ------------------------------------------
+
+    figure( ...
+        'Name',[nome ' - Alpha disturbance recovery'])
+
+    plot( ...
+        t_alpha, ...
+        rad2deg(alpha_value), ...
+        'LineWidth',1.5)
+
+    hold on
+
     yline( ...
-        soglia_beta, ...
+        rad2deg(r_alpha + soglia_alpha), ...
         '--')
 
     yline( ...
-        -soglia_beta, ...
+        rad2deg(r_alpha - soglia_alpha), ...
         '--')
 
     xline( ...
         t_dist, ...
-        ':')
+        ':', ...
+        'LineWidth',1)
 
-end
+    grid on
+
+    xlabel('Time [s]')
+    ylabel('\alpha [deg]')
+
+    legend( ...
+        '\alpha', ...
+        ['r_\alpha + ' num2str(rad2deg(soglia_alpha)) '°'], ...
+        ['r_\alpha - ' num2str(rad2deg(soglia_alpha)) '°'], ...
+        'Disturbance', ...
+        'Location','best')
+
+    title('Disturbance rejection on \alpha')
 
 
-grid on
+    %% ------------------------------------------
+    % DISTURBANCE RECOVERY BETA
+    %% ------------------------------------------
 
+    figure( ...
+        'Name',[nome ' - Beta disturbance recovery'])
 
-xlabel('Tempo [s]')
+    plot( ...
+        t_beta, ...
+        rad2deg(beta_value), ...
+        'LineWidth',1.5)
 
-ylabel('\beta [rad]')
+    hold on
 
+    yline( ...
+        rad2deg(soglia_beta), ...
+        '--')
 
-if tipo_test == 2 || tipo_test == 3
+    yline( ...
+        -rad2deg(soglia_beta), ...
+        '--')
+
+    xline( ...
+        t_dist, ...
+        ':', ...
+        'LineWidth',1)
+
+    grid on
+
+    xlabel('Time [s]')
+    ylabel('\beta [deg]')
 
     legend( ...
         '\beta', ...
         ['+' num2str(rad2deg(soglia_beta)) '°'], ...
         ['-' num2str(rad2deg(soglia_beta)) '°'], ...
-        'Disturbo', ...
+        'Disturbance', ...
         'Location','best')
 
-else
-
-    legend('\beta','Location','best')
+    title('Disturbance rejection on \beta')
 
 end
-
-
-title('Reiezione del disturbo su \beta')
 
 
 %% ==========================================

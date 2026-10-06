@@ -12,6 +12,35 @@ load('HINF_workspace.mat');
 load('HINF_controllers.mat'); % Carica K_mix, K_hinfsyn, K_pidcomp
 load('MU_controller.mat');    % Carica K_mu
 
+%% VERIFICA MODELLO INCERTO COMPLETO
+
+requiredBlocks = { ...
+    'J_alpha'
+    'l'
+    'eps_p'
+    'eps_y'
+    'Jy'
+    'Jz'
+    'm'
+    'omega_n'
+    'tau_d'
+};
+
+actualBlocks = fieldnames(G_uncertain.Uncertainty);
+
+disp('--- Incertezze presenti in G_uncertain ---')
+disp(actualBlocks)
+
+missingBlocks = setdiff(requiredBlocks,actualBlocks);
+
+if ~isempty(missingBlocks)
+    error('Mancano questi blocchi di incertezza: %s', ...
+        strjoin(missingBlocks,', '));
+end
+
+fprintf('OK: G_uncertain contiene tutte le %d incertezze richieste.\n', ...
+    numel(requiredBlocks));
+
 % Scegli il controllore da testare (es. K_mix, K_hinfsyn, K_pidcomp o K_mu)
 controllers = {
     K_mix

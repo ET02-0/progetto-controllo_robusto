@@ -41,26 +41,39 @@ end
 
 %% 4) Sintesi LQR (Regolazione)
 % Stati: [alpha, alpha_dot, beta, beta_dot, act1, act1_dot, act2, act2_dot]
-Q_heli = diag([1000 40 1500 40]);
-Q_act  = diag([1, 0.1, 1, 0.1]);     % Pesi moderati sugli attuatori
-Q_lqr  = blkdiag(Q_heli, Q_act);
-R_lqr = 0.1*eye(2)
+Q_heli = diag([800, 20, 10000, 500]);
+
+Q_act = diag([5, 0.5, 5, 0.5]);
+
+Q_lqr = blkdiag(Q_heli, Q_act);
+
+R_lqr = diag([0.5 0.25]);
 
 K_lqr = lqr(A_ext, B_ext, Q_lqr, R_lqr);
 disp('Guadagni LQR calcolati con successo.');
 
 %% 5) Sintesi Filtro di Kalman (Stima dello stato)
 % Il rumore di processo entra attraverso gli ingressi (es. disturbo sui rotori/vento)
-Gk  = B_ext;
-W = diag([
-    0.001
-    0.001
-]);
+Gk = B_ext;
+
+W = diag([0.003 0.0015]);
+
+%{
+% --- W sovrascrivibile dall'esterno (es. sweep_kalman_W.m) ---
+% Se W esiste gia' nel base workspace (impostato dallo sweep), la si usa cosi' com'e'.
+% Altrimenti si usa il valore di default per l'esecuzione singola dello script.
+if ~exist('W','var')
+    W = diag([0.01  0.01 ]);
+end
+%}
+
 
 V = sensor.R;
 
 Qn = W;
 Rn = V;
+
+fprintf('LQG2 -> W = [%.6g %.6g]\n', W(1,1), W(2,2));
 
 Estimator = ss(A_ext, Gk, C_ext, zeros(c, m));
 [~, Ke, ~] = kalman(Estimator, Qn, Rn);
@@ -106,14 +119,31 @@ Cc_ctrl = -K_lqr;
 Dc_ctrl = zeros(m,c);
 
 
-K_lqg_reg = ss(Ac_ctrl,...
-               Bc_ctrl,...
-               Cc_ctrl,...
-               Dc_ctrl);
+K_lqg_reg = ss( ...
+    Ac_ctrl, ...
+    Bc_ctrl, ...
+    [Cc_ctrl;
+     eye(n_ext)], ...
+    [Dc_ctrl;
+     zeros(n_ext,c)]);
+
+K_lqg_reg.InputName = {'y_acc','m_x','m_y'};
+
+K_lqg_reg.OutputName = {
+    'u1'
+    'u2'
+    'alpha_hat'
+    'alphadot_hat'
+    'beta_hat'
+    'betadot_hat'
+    'act1_hat'
+    'act1dot_hat'
+    'act2_hat'
+    'act2dot_hat'
+};
+
 save('LQG_Controllers.mat','K_lqg_reg');
 
-K_lqg_reg.InputName={'y_acc','m_x','m_y'};
-K_lqg_reg.OutputName = {'u1','u2'};
 
 
 disp('Controllore LQG regolatore 1-DOF creato');
@@ -125,3 +155,34 @@ disp(eig(Acl_reg))
 
 disp('Poli osservatore:')
 disp(eig(Aobs))
+
+%% =========================================================
+% GRAFICO POLI LQG 1-DOF
+% =========================================================
+
+figure('Name','Poli LQG 1-DOF','Color','w')
+
+plot(real(eig(Acl_reg)),imag(eig(Acl_reg)),'x', ...
+    'MarkerSize',10, ...
+    'LineWidth',2)
+
+hold on
+
+plot(real(eig(Aobs)),imag(eig(Aobs)),'o', ...
+    'MarkerSize',8, ...
+    'LineWidth',1.5)
+
+xline(0,'k--','LineWidth',0.8)
+
+grid on
+
+xlabel('Parte reale')
+ylabel('Parte immaginaria')
+
+title('Poli LQG 1-DOF')
+
+legend( ...
+    'Poli LQR', ...
+    'Poli osservatore', ...
+    'Asse immaginario', ...
+    'Location','best')

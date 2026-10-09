@@ -2,7 +2,6 @@
 %% ==========================================
 %  FASE 2: SINTESI LQG
 %  Plant + Attuatori
-%  (senza ritardo di Padé nella sintesi)
 % ==========================================
 
 disp('==============================================')
@@ -25,8 +24,8 @@ fprintf('Ingressi= %d\n',m)
 fprintf('Uscite  = %d\n',c)
 
 
-if n_ext ~= 8
-    error('Errore: il modello esteso non ha 8 stati.')
+if n_ext ~= 10
+    error('Errore: il modello esteso non ha 10 stati.')
 end
 
 
@@ -44,25 +43,47 @@ pzmap(P_ext)
 grid on
 title('Poli modello esteso')
 
-%% Controllabilità modello esteso
+lambda = eig(A_ext);
 
-rank_ctrb = rank(ctrb(A_ext,B_ext));
+controllabile = true;
+osservabile   = true;
 
-fprintf('\nControllabilita LQG: %d/%d\n',...
-    rank_ctrb,n_ext);
+for k = 1:length(lambda)
 
+    Mcont = [lambda(k)*eye(n_ext)-A_ext, B_ext];
+    Mobs  = [lambda(k)*eye(n_ext)-A_ext; C_ext];
 
-rank_obs = rank(obsv(A_ext,C_ext));
+    if rank(Mcont) < n_ext
+        controllabile = false;
+    end
 
-fprintf('Osservabilita LQG: %d/%d\n',...
-    rank_obs,n_ext);
+    if rank(Mobs) < n_ext
+        osservabile = false;
+    end
+
+end
+
+if controllabile
+    disp('Il sistema esteso è COMPLETAMENTE CONTROLLABILE (PBH).');
+else
+    warning('Il sistema NON è completamente controllabile (PBH).');
+end
+
+if osservabile
+    disp('Il sistema esteso è COMPLETAMENTE OSSERVABILE (PBH).');
+else
+    warning('Il sistema NON è completamente osservabile (PBH).');
+end
 
 %% -------------------------------------------------
 % 8) Pesi LQR (Regola di Bryson + Smorzamento)
 % --------------------------------------------------
-% Stato x = [alpha, alpha_dot, beta, beta_dot, x_act1, x_act1_dot, x_act2, x_act2_dot]
+% Stato x =
+% [alpha, alpha_dot, beta, beta_dot, ...
+%  act1_1, act1_2, act1_pade, ...
+%  act2_1, act2_2, act2_pade]
 
-%% Esempio di tuning per smorzare le oscillazioni nel regolatore a 8 stati
+%% Esempio di tuning per smorzare le oscillazioni nel regolatore a 10 stati
 %% Pesi LQR tuning smorzamento
 
 %% Tuning maggiore smorzamento pitch
@@ -71,7 +92,8 @@ fprintf('Osservabilita LQG: %d/%d\n',...
 
 Q_heli = diag([800, 20, 10000, 500]);
 
-Q_act = diag([5, 0.5, 5, 0.5]);
+Q_act = diag([5, 0.5, 1, ...
+              5, 0.5, 1]);
 
 Q_lqr = blkdiag(Q_heli, Q_act);
 
@@ -126,8 +148,8 @@ disp('Filtro Kalman calcolato')
 % 1) Precompensatore Statico (Giusto, lo teniamo)
 Acl = A_ext - B_ext*K_lqr;
 C_track = [
-1 0 0 0 0 0 0 0;
-0 0 1 0 0 0 0 0
+1 0 0 0 0 0 0 0 0 0;
+0 0 1 0 0 0 0 0 0 0
 ];
 Kr = -inv(C_track*(Acl\B_ext));
 disp('Precompensatore Kr:');
@@ -137,7 +159,9 @@ disp(Kr);
 % Lo stato è xc = x_hat
 Ac_ctrl = A_ext - B_ext*K_lqr - Ke*C_ext;
 
-% Il controllore ora ha 4 ingressi: i 2 riferimenti (r) e le 2 misure (y)
+% Il controllore ha 5 ingressi:
+% 2 riferimenti [r_alpha, r_beta]
+% 3 misure [y_acc, m_x, m_y]
 % L'ingresso r entra nell'osservatore moltiplicato per B_ext*Kr
 % L'ingresso y entra nell'osservatore moltiplicato per Ke
 Bc_ctrl = [B_ext*Kr, Ke]; 
@@ -148,7 +172,7 @@ Bc_ctrl = [B_ext*Kr, Ke];
 % =========================================================
 % Uscite:
 % 1-2  -> u1, u2
-% 3-10 -> xhat(1:8)
+% 3-12 -> xhat(1:10)
 
 Cc_ctrl = [
     -K_lqr;
@@ -183,10 +207,11 @@ K_lqg_2dof.OutputName = {
     'betadot_hat'
     'act1_hat'
     'act1dot_hat'
+    'act1_pade_hat'
     'act2_hat'
     'act2dot_hat'
+    'act2_pade_hat'
 };
-
 save('LQG_Controllers.mat','K_lqg_2dof','-append');
 
 disp('Controllore LQG 2-DOF creato con successo');
@@ -199,8 +224,8 @@ disp('Controllore LQG 2-DOF creato con successo');
 
 C_monitor_track = [
     C_ext;
-    1 0 0 0 0 0 0 0;
-    0 0 1 0 0 0 0 0
+    1 0 0 0 0 0 0 0 0 0;
+    0 0 1 0 0 0 0 0 0 0
 ];
 
 D_monitor_track = zeros(5,2);
@@ -237,9 +262,8 @@ CL_monitor.OutputName
 
 Bd_ext = [
     Bd_nom
-    zeros(4,2)
+    zeros(6,2)
 ];
-
 B_dist = [B_ext Bd_ext];
 
 % Uscite:
@@ -249,8 +273,8 @@ B_dist = [B_ext Bd_ext];
 
 C_dist = [
     C_ext;
-    1 0 0 0 0 0 0 0;
-    0 0 1 0 0 0 0 0
+    1 0 0 0 0 0 0 0 0 0;
+    0 0 1 0 0 0 0 0 0 0
 ];
 
 D_dist = zeros(5,4);
@@ -340,20 +364,16 @@ fprintf('delta_beta_ss = %.8f rad (%.4f deg)\n', ...
 % ==========================================
 
 
-P_full_nom.InputName = {'u1','u2'};
-P_full_nom.OutputName = {
-'y_acc',...
-'m_x',...
-'m_y'};
+P_ext.InputName = {'u1','u2'};
+P_ext.OutputName = {
+    'y_acc',...
+    'm_x',...
+    'm_y'};
 
-
-CL_nom = connect(P_full_nom,...
+CL_nom = connect(P_ext,...
                  K_lqg_2dof_ctrl,...
                  {'r_alpha','r_beta'},...
                  {'y_acc','m_x','m_y'});
-
-
-
 
 disp('==============================================')
 disp(' ANALISI STABILITA')

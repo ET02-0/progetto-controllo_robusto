@@ -8,42 +8,68 @@ close all;
 clear Ac_ctrl Bc_ctrl Cc_ctrl Dc_ctrl K_lqg_2dof CL_nom CL_unc Kr;
 
 disp('==============================================')
-disp(' SINTESI LQG 1-DOF SENZA INTEGRATORE (8 STATI)')
+disp(' SINTESI LQG 1-DOF SENZA INTEGRATORE (10 STATI)')
 disp('==============================================')
 umax = 5; % esempio Nm
 %% 1) Estrazione imanto nominale e attuatori dal Dataset
 % P_nom è il modello nominale dell'elicottero:
 % 4 stati [alpha, alpha_dot, beta, beta_dot],
 % 2 ingressi di controllo e 3 uscite sensoriali
-[A_heli, B_heli, C_heli, D_heli] = ssdata(P_nom);
 
-n_ext = size(A_ext, 1); % Dovrebbe essere 8
+
+n_ext = size(A_ext, 1); % 10
 m     = size(B_ext, 2); % 2
-c     = size(C_ext, 1); % 2
+c     = size(C_ext, 1); % 3
 
-fprintf('Stati modello esteso = %d (Attesi: 8)\n', n_ext);
-if n_ext ~= 8
-    error('Errore: il modello esteso non ha 8 stati.');
+fprintf('Stati modello esteso = %d (Attesi: 10)\n', n_ext);
+
+if n_ext ~= 10
+    error('Errore: il modello esteso non ha 10 stati.');
 end
 
-%% 3) Analisi di Controllabilità e Osservabilità
-if rank(ctrb(A_ext, B_ext)) == n_ext
-    disp('Il sistema esteso è CONTROLLABILE.');
-else
-    warning('Il sistema NON è completamente controllabile.');
+%% 2) Analisi di Controllabilità e Osservabilità - PBH
+
+lambda = eig(A_ext);
+
+controllabile = true;
+osservabile   = true;
+
+for k = 1:length(lambda)
+
+    Mcont = [lambda(k)*eye(n_ext)-A_ext, B_ext];
+    Mobs  = [lambda(k)*eye(n_ext)-A_ext; C_ext];
+
+    if rank(Mcont) < n_ext
+        controllabile = false;
+    end
+
+    if rank(Mobs) < n_ext
+        osservabile = false;
+    end
+
 end
 
-if rank(obsv(A_ext, C_ext)) == n_ext
-    disp('Il sistema esteso è OSSERVABILE.');
+if controllabile
+    disp('Il sistema esteso è COMPLETAMENTE CONTROLLABILE (PBH).');
 else
-    warning('Il sistema NON è completamente osservabile.');
+    warning('Il sistema NON è completamente controllabile (PBH).');
+end
+
+if osservabile
+    disp('Il sistema esteso è COMPLETAMENTE OSSERVABILE (PBH).');
+else
+    warning('Il sistema NON è completamente osservabile (PBH).');
 end
 
 %% 4) Sintesi LQR (Regolazione)
-% Stati: [alpha, alpha_dot, beta, beta_dot, act1, act1_dot, act2, act2_dot]
+% Stati:
+% [alpha, alpha_dot, beta, beta_dot, ...
+%  act1_1, act1_2, act1_pade, ...
+%  act2_1, act2_2, act2_pade]
 Q_heli = diag([800, 20, 10000, 500]);
 
-Q_act = diag([5, 0.5, 5, 0.5]);
+Q_act = diag([5, 0.5, 1, ...
+              5, 0.5, 1]);
 
 Q_lqr = blkdiag(Q_heli, Q_act);
 
@@ -138,8 +164,10 @@ K_lqg_reg.OutputName = {
     'betadot_hat'
     'act1_hat'
     'act1dot_hat'
+    'act1_pade_hat'
     'act2_hat'
     'act2dot_hat'
+    'act2_pade_hat'
 };
 
 save('LQG_Controllers.mat','K_lqg_reg');
@@ -156,33 +184,67 @@ disp(eig(Acl_reg))
 disp('Poli osservatore:')
 disp(eig(Aobs))
 
-%% =========================================================
-% GRAFICO POLI LQG 1-DOF
-% =========================================================
+%% ==========================================
+% CICLO CHIUSO NOMINALE LQG 1-DOF
+% ==========================================
 
-figure('Name','Poli LQG 1-DOF','Color','w')
 
-plot(real(eig(Acl_reg)),imag(eig(Acl_reg)),'x', ...
-    'MarkerSize',10, ...
-    'LineWidth',2)
+Bd_ext = [
+    Bd_nom
+    zeros(6,2)
+];
 
-hold on
+B_dist = [B_ext Bd_ext];
 
-plot(real(eig(Aobs)),imag(eig(Aobs)),'o', ...
-    'MarkerSize',8, ...
-    'LineWidth',1.5)
+C_dist = [
+    C_ext;
+    1 0 0 0 0 0 0 0 0 0;
+    0 0 1 0 0 0 0 0 0 0
+];
 
-xline(0,'k--','LineWidth',0.8)
+D_dist = zeros(5,4);
 
+P_dist = ss( ...
+    A_ext, ...
+    B_dist, ...
+    C_dist, ...
+    D_dist);
+
+P_dist.InputName = {
+    'u1'
+    'u2'
+    'd_alpha'
+    'd_beta'
+};
+
+P_dist.OutputName = {
+    'y_acc'
+    'm_x'
+    'm_y'
+    'delta_alpha'
+    'delta_beta'
+};
+
+CL_nom_1dof = connect( ...
+    P_dist, ...
+    K_lqg_reg, ...
+    {'d_alpha','d_beta'}, ...
+    {'delta_alpha','delta_beta'});
+
+%% Poli + zeri ciclo chiuso
+
+figure
+pzmap(CL_nom_1dof)
 grid on
+title('Poli e zeri Closed Loop LQG 1-DOF')
 
-xlabel('Parte reale')
-ylabel('Parte immaginaria')
-
-title('Poli LQG 1-DOF')
-
-legend( ...
-    'Poli LQR', ...
-    'Poli osservatore', ...
-    'Asse immaginario', ...
-    'Location','best')
+% eventualmente, separatamente:
+figure;
+plot(real(eig(Acl_reg)),imag(eig(Acl_reg)),'x');
+hold on;
+plot(real(eig(Aobs)),imag(eig(Aobs)),'o');
+grid on;
+xlabel('Re');
+ylabel('Im');
+title('LQG 1-DOF - Poli LQR e poli osservatore');
+legend('Poli LQR','Poli osservatore');

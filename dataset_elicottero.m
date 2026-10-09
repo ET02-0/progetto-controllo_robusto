@@ -2,7 +2,7 @@
 % Script di Inizializzazione e Linearizzazione: Elicottero 2DoF
 % Progetto di Controllo Robusto (Sintesi Robusta su 4 stati)
 % =========================================================================
-clear all; close all; clc;
+clear; close all; clc;
 disp('Configurazione parametri Elicottero 2DoF (Controllo Robusto)...');
 which uss -all
 
@@ -34,7 +34,7 @@ p.g = 9.81;
 %% 2. PUNTO DI EQUILIBRIO (Trim Point)
 
 alpha_0 = deg2rad(10);
-beta_0  = 0;
+beta_0  = deg2rad(15);
 
 % --- Condizioni iniziali per i blocchi Integratore di Simulink ---
 q0    = [alpha_0; beta_0]; 
@@ -93,6 +93,181 @@ Jz_u = ureal('Jz',0.00364,'Percentage',5);
 m_u  = ureal('m',0.2,'Percentage',5);
 omega_n_u = ureal('omega_n',30,'Percentage',10);
 
+%% ============================================================
+%  CASO SEPARATO:
+%  omega_n e tau_d parametrici + residuo complesso Padé
+% =============================================================
+
+s = tf('s');
+
+% Intervallo ammesso di tau_d
+tau_vec = linspace(0.80*tau_d_nom, 1.20*tau_d_nom, 21);
+
+% Griglia di frequenza
+w = logspace(-1,3,500);
+
+% Famiglia del residuo:
+%
+% R_pade(s,tau) = exp(-tau*s) / G_pade(s,tau)
+%
+% quindi il nominale di questa famiglia è 1.
+
+R_pade_array = [];
+
+for k = 1:length(tau_vec)
+
+    tau = tau_vec(k);
+
+    G_delay_exact = tf(1,1,'InputDelay',tau);
+
+    G_delay_pade = ...
+        (1 - tau*s/2) / ...
+        (1 + tau*s/2);
+
+    R_pade = G_delay_exact / G_delay_pade;
+
+    if k == 1
+        R_pade_array = R_pade;
+    else
+        R_pade_array = cat(3,R_pade_array,R_pade);
+    end
+
+end
+
+% Conversione in FRD
+R_pade_frd = frd(R_pade_array,w);
+
+%% ================================================================
+% INVILUPPO DELL'ERRORE PADE
+% ================================================================
+
+[resp_R,freq_R] = frdata(R_pade_frd);
+
+resp_R = squeeze(resp_R);
+
+% Errore rispetto al modello nominale R_nom = 1
+err_pade = abs(resp_R - 1);
+
+% Inviluppo massimo sui diversi valori di tau
+err_env = max(err_pade,[],2);
+
+% Evita lo zero esatto alle basse frequenze durante il fit
+err_floor = 1e-8;
+err_env_fit = max(err_env,err_floor);
+
+%% ================================================================
+% FIT DEL PESO W_Pade
+% ================================================================
+
+E_pade_env = frd( ...
+    reshape(err_env_fit,1,1,[]), ...
+    freq_R);
+
+order_pade = 4;
+
+Cfit.LowerBound = E_pade_env;
+Cfit.UpperBound = Inf;
+
+W_Pade = fitmagfrd( ...
+    E_pade_env, ...
+    order_pade, ...
+    [], ...
+    [], ...
+    Cfit);
+
+%% ================================================================
+% VERIFICA W_Pade
+% ================================================================
+
+disp('============================================================');
+disp(' VERIFICA W_Pade');
+disp('============================================================');
+
+W_Pade
+
+disp('Poli W_Pade:');
+pole(W_Pade)
+
+mag_WPade = squeeze(abs(freqresp(W_Pade,freq_R)));
+
+fprintf('NaN presenti in W_Pade: %d\n', ...
+    any(isnan(mag_WPade)));
+
+fprintf('Inf presenti in W_Pade: %d\n', ...
+    any(isinf(mag_WPade)));
+
+fprintf('Modulo minimo W_Pade: %.6e\n', ...
+    min(mag_WPade));
+
+fprintf('Modulo massimo W_Pade: %.6e\n', ...
+    max(mag_WPade));
+
+%% ================================================================
+% VERIFICA NUMERICA DEL COVER
+% ================================================================
+
+ratio_Pade = err_env ./ mag_WPade;
+
+[max_ratio,idx_max] = max(ratio_Pade);
+
+fprintf('\n============================================================\n');
+fprintf(' RISULTATO COVER PADE\n');
+fprintf('============================================================\n');
+
+fprintf('Massimo errore relativo Padé = %.6e\n', ...
+    max(err_env));
+
+fprintf('Massimo |W_Pade| = %.6e\n', ...
+    max(mag_WPade));
+
+fprintf('Massimo rapporto errore/W = %.6f\n', ...
+    max_ratio);
+
+fprintf('Frequenza del massimo rapporto = %.6f rad/s\n', ...
+    freq_R(idx_max));
+
+fprintf('Punti oltre il cover = %d / %d\n', ...
+    sum(ratio_Pade > 1), ...
+    length(ratio_Pade));
+
+%% ================================================================
+% GRAFICO DEL COVER
+% ================================================================
+
+figure('Name','Cover errore Padé');
+
+semilogx( ...
+    freq_R, ...
+    err_env, ...
+    'LineWidth',1.5);
+
+hold on;
+
+semilogx( ...
+    freq_R, ...
+    mag_WPade, ...
+    'LineWidth',1.5);
+
+grid on;
+
+xlabel('\omega [rad/s]');
+ylabel('Modulo');
+
+title('Inviluppo errore Padé e W_{Pade}');
+
+legend( ...
+    '|R_{Pade}-1| massimo', ...
+    '|W_{Pade}|', ...
+    'Location','best');
+
+%% ================================================================
+% INCERTEZZA COMPLESSA DINAMICA
+% ================================================================
+
+Delta_Pade = ultidyn( ...
+    'Delta_Pade', ...
+    [1 1]);
+
 %% 3. DINAMICA DEGLI ATTUATORI
 
 omega_n = 30;
@@ -137,8 +312,10 @@ den_pade_unc = [ tau_d_u/2 1];
 
 G_delay_pade_unc = tf(num_pade_unc,den_pade_unc);
 
-G_actuator_unc = ...
-    G_act_2nd_unc * G_delay_pade_unc;
+G_actuator_unc =  ...
+    G_act_2nd_unc * ...
+    G_delay_pade_unc * ...
+    (1 + W_Pade*Delta_Pade);
 
 %% ========================================================================
 % 4. STRUTTURE PER SIMULINK (Attuatori, Sensori, Disturbi, Riferimenti)
@@ -468,7 +645,7 @@ Bd_nom = [
 
 Bd_ext = [
     Bd_nom
-    zeros(4,2)
+    zeros(6,2)
 ];
 
 
@@ -509,9 +686,7 @@ P_nom_ext.OutputName = P_nom.OutputName;
 % --------------------------------------------------
 
 
-[A_act,B_act,C_act,D_act] = ssdata(G_act_2nd);
-
-Actuator = ss(A_act,B_act,C_act,D_act);
+Actuator = ss(G_act_nom);
 
 Actuators_MIMO = blkdiag(Actuator,Actuator);
 
@@ -598,7 +773,7 @@ P_unc_angles.OutputName = {
 
 
 %% ATTUATORI
-P_full_nom = P_nom*blkdiag(G_act_2nd,G_act_2nd);
+
 P_full_unc = P_unc*blkdiag(G_actuator_unc,G_actuator_unc);
 
 

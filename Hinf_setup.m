@@ -86,76 +86,127 @@ disp(norm(Gx(:,1:2)-G_scaled, inf));                           % controllo: deve
 
 disp('Normalizzazione completata.');
 
-%% 4. DEFINIZIONE DEI PESI FREQUENZIALI (W_S, W_U, W_T)
+
 %% ========================================================================
-%  PESI DI PRESTAZIONE PER LA SINTESI MIXED-SENSITIVITY
+% 4. PESI H-INFINITY COMUNI A TUTTE LE SINTESI
 %
-%  Problema:   min || [ W1*S ; W2*K*S ; W3*T ] ||_inf  < 1
+% Utilizzati da:
+%   1) mixsyn
+%   2) hinfsyn
+%   3) hinfstruct
+%   4) musyn
 %
-%  W1 -> forma S: banda, errore a regime, picco di sensitivita (= margini)
-%  W2 -> forma K*S: sforzo di controllo e amplificazione del rumore
-%  W3 -> forma T: roll-off, robustezza a dinamica non modellata
+% Formulazione allineata al setup dei colleghi.
 % ========================================================================
 
 s = tf('s');
 
-%% ------------------------------------------------------------------ WS %%
-%  WS_i = (s/M + wb_i)/(s + wb_i*A).
-M_S = [1.8; 1.7];
-A_S = 0.10;
-wb  = [2.0;1.5];
+%% ------------------------------------------------------------------------
+% WS - PESO SULL'ERRORE
+% -------------------------------------------------------------------------
 
-WS_a = (s/M_S(1) + wb(1))/(s + wb(1)*A_S);
-WS_b = ((s/M_S(2) + wb(2))/(s + wb(2)*A_S))^2;
-WS   = blkdiag(WS_a, WS_b);
+weight.Ms_alpha = 1.60;
+weight.Ms_beta  = 1.65;
+
+% Peso sulla sensibilità: specifica meno stringente a bassa frequenza
+% Peso sulla sensibilità
+weight.As_alpha = 0.05;
+weight.As_beta  = 0.05;
+
+weight.wb_alpha = 3.8;
+weight.wb_beta  = 3.0;
+
+WS_alpha = ...
+    (s/weight.Ms_alpha + weight.wb_alpha) / ...
+    (s + weight.wb_alpha*weight.As_alpha);
+
+WS_beta = ...
+    (s/weight.Ms_beta + weight.wb_beta) / ...
+    (s + weight.wb_beta*weight.As_beta);
+
+WS = blkdiag(WS_alpha, WS_beta);
 
 
+%% ------------------------------------------------------------------------
+% WU - PESO SULLO SFORZO DI CONTROLLO
+% -------------------------------------------------------------------------
 
-%% ------------------------------------------------------------------ WU %%
-%  Vincolo: |K*S| <= u_max/e_max in bassa frequenza, con forte penalizzazione
-%  in alta frequenza (roll-off del controllore -> rumore IMU non amplificato).
+WU = ss([], [], [], 0.65*eye(2));
 
-kU = 0.1;
-wu = 8;                 % [rad/s] inizio della penalizzazione
-Mu = 7;                 % LF: 0.1, HF: 0.7
-WU_ch = kU*(s/wu + 1)/(s/(Mu*wu) + 1);
-WU = blkdiag(WU_ch, WU_ch);
 
-%% ------------------------------------------------------------------ WT %%
-%  WT_i = (s + wbt/M_T)/(A_T*s + wbt)
-M_T = 1.50;
-A_T = 0.01;
-wbt = [22; 18];                     % [rad/s]
+%% ------------------------------------------------------------------------
+% WT - PESO SULLA SENSIBILITA' COMPLEMENTARE
+% -------------------------------------------------------------------------
 
-WT = blkdiag( (s + wbt(1)/M_T)/(A_T*s + wbt(1)), ...
-              (s + wbt(2)/M_T)/(A_T*s + wbt(2)) );
-WT.u = {'y(1)','y(2)'};  
-WT.y = {'z3(1)','z3(2)'};
+weight.Mt_alpha = 1.50;
+weight.Mt_beta  = 1.50;
 
-%% -------------------------------------------------------- visualizzazione
-w = logspace(-3,3,800);
-figure('Name','Pesi di prestazione');
-sigma(1/WS(1,1),'b', 1/WU(1,1),'r', 1/WT(1,1),'g', w); grid on
-legend('1/W1 (vincolo su S)','1/W2 (vincolo su KS)','1/W3 (vincolo su T)', ...
-       'Location','best');
-title('Vincoli di progetto (canale pitch)');
+weight.At_alpha = 0.01;
+weight.At_beta  = 0.01;
 
-fprintf(['Specifiche: wb = [%.1f %.1f] rad/s, ||S||inf <= %.1f, ' ...
-         '||T||inf <= %.1f, roll-off T = %.0f dB\n'], wb(1),wb(2),M_S,M_T, ...
-         20*log10(A_T));
-fprintf('=== s02 completato: ora esegui s03_mixsyn ===\n\n');
+weight.wt_alpha = 22;
+weight.wt_beta  = 18;
 
-%% ------------------------------------------------------------ COME TARARE
-%  Se gamma > 1 in s03/s04:
-%    1. abbassa wb (prima cosa da provare: wb = [2 1.5]);
-%    2. alza M_S a 2.5 e M_T a 2.5;
-%    3. alza A_T (roll-off meno aggressivo, es. 0.05);
-%    4. alza kU (piu autorita al controllore) SOLO se le saturazioni lo
-%       consentono: verificalo poi in s07 sul modello non lineare.
-%  Se gamma << 1 le specifiche sono poco ambiziose: alza wb.
+WT_alpha = ...
+    (s + weight.wt_alpha*weight.At_alpha) / ...
+    (s/weight.Mt_alpha + weight.wt_alpha);
 
-%% 5. COSTRUZIONE DEL PLANT GENERALIZZATO (P_mix)
-P_mix = augw(G_scaled, WS, WU, WT);             
+WT_beta = ...
+    (s + weight.wt_beta*weight.At_beta) / ...
+    (s/weight.Mt_beta + weight.wt_beta);
+
+WT = blkdiag(WT_alpha, WT_beta);
+
+
+%% ------------------------------------------------------------------------
+% VERIFICA DEI PESI
+% -------------------------------------------------------------------------
+
+fprintf('\n============================================================\n');
+fprintf('PESI COMUNI H-INFINITY / MU-SYNTHESIS\n');
+fprintf('============================================================\n');
+
+disp('WS ='); disp(WS);
+disp('WU ='); disp(WU);
+disp('WT ='); disp(WT);
+
+fprintf('dcgain(WS) =\n');
+disp(dcgain(WS));
+
+fprintf('dcgain(WU) =\n');
+disp(dcgain(WU));
+
+fprintf('dcgain(WT) =\n');
+disp(dcgain(WT));
+
+
+%% Grafici
+
+omegaWeights = logspace(-2,3,500);
+
+figure('Name','Pesi comuni H-infinity');
+
+subplot(3,1,1);
+sigma(inv(WS),omegaWeights);
+grid on;
+title('W_S^{-1} - limite sulla sensibilita''');
+
+subplot(3,1,2);
+sigma(inv(WU),omegaWeights);
+grid on;
+title('W_U^{-1} - limite sullo sforzo di controllo');
+
+subplot(3,1,3);
+sigma(inv(WT),omegaWeights);
+grid on;
+title('W_T^{-1} - limite sulla sensibilita'' complementare');
+
+
+%% ------------------------------------------------------------------------
+% PLANT GENERALIZZATO COMUNE
+% -------------------------------------------------------------------------
+
+P_mix = augw(G_scaled, WS, WU, WT);
 
 %% 6. VISUALIZZAZIONE E SALVATAGGIO
 omegaWeights = logspace(-2,3,500);
@@ -178,6 +229,11 @@ save('HINF_workspace.mat', ...
       'Du', ...
       'Dy_inv', ...
       'Du_inv', ...
-      'omegaWeights');
+      'omegaWeights', ...
+      'Gx', ...
+      'Gdd', ...
+      'Dd', ...
+      'P_mix',...
+      'weight');
 
 disp('Setup completato e HINF_workspace.mat salvato!');

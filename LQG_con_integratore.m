@@ -1,6 +1,7 @@
 % =========================================================================
 % Script di Inizializzazione e Linearizzazione: Elicottero 2DoF
-% Progetto di Controllo Robusto (Sintesi Robusta su 4 stati)
+% Progetto di Controllo Robusto
+% LQG 2-DOF con integratore - modello esteso a 10 stati
 % =========================================================================
 
 %close all
@@ -24,8 +25,8 @@ fprintf('Ingressi= %d\n',m)
 fprintf('Uscite  = %d\n',c)
 
 
-if n_ext ~= 8
-    error('Errore: il modello esteso non ha 8 stati.')
+if n_ext ~= 10
+    error('Errore: il modello esteso non ha 10 stati.')
 end
 
 
@@ -41,13 +42,14 @@ disp(eig(A_ext))
 figure
 pzmap(P_ext)
 grid on
-title('Poli modello esteso')
+title('Poli e zeri modello esteso')
 
 
 %% Integratori su pitch (alpha) e yaw (beta)
-% Il vettore di stato esteso è: [alpha, alphad, beta, betad, stati_attuatori(1..4)]
-C_int = [1 0 0 0 0 0 0 0;   % Estrae alpha (stato 1)
-         0 0 1 0 0 0 0 0];  % Estrae beta (stato 3)
+C_int = [
+    1 0 0 0 0 0 0 0 0 0;
+    0 0 1 0 0 0 0 0 0 0
+];
 
 ni = size(C_int,1);         % Ora ni = 2
 
@@ -62,70 +64,80 @@ B_ext;
 zeros(ni,m)
 ];
 
-rank_ctrb = rank(ctrb(Aa,Ba));
 
-if rank_ctrb < size(Aa,1)
 
-    fprintf("Modo non controllabile:\n")
+%% -------------------------------------------------
+% 6) Verifica controllabilità sistema aumentato - PBH
+% -------------------------------------------------
 
-    [L,D]=eig(Aa);
+lambda_a = eig(Aa);
 
-    for i=1:length(diag(D))
-        if abs(real(D(i)))<1e-8
-            disp(L(:,i))
-        end
+controllabile_a = true;
+
+for k = 1:length(lambda_a)
+
+    Mcont_a = [
+        lambda_a(k)*eye(size(Aa)) - Aa, ...
+        Ba
+    ];
+
+    r = rank(Mcont_a);
+
+    fprintf('PBH controllabilità, polo %d: rango = %d/%d\n', ...
+        k, r, size(Aa,1));
+
+    if r < size(Aa,1)
+        controllabile_a = false;
+    end
+end
+
+if controllabile_a
+    disp('Il sistema aumentato è COMPLETAMENTE CONTROLLABILE (PBH).');
+else
+    warning('Il sistema aumentato NON è completamente controllabile (PBH).');
+end
+
+
+%% -------------------------------------------------
+% 7) Verifica osservabilità - PBH
+% -------------------------------------------------
+
+lambda_obs = eig(A_ext);
+
+osservabile = true;
+
+for k = 1:length(lambda_obs)
+
+    Mobs = [
+        lambda_obs(k)*eye(n_ext) - A_ext;
+        C_ext
+    ];
+
+    if rank(Mobs) < n_ext
+        osservabile = false;
     end
 
+    fprintf('PBH osservabilità, polo %d: rango = %d/%d\n', ...
+        k, rank(Mobs), n_ext);
 end
 
+fprintf('\n');
 
-%% -------------------------------------------------
-% 6) Verifica controllabilità e stabilizzabilità
-% --------------------------------------------------
-% Usiamo la decomposizione in valori singolari (SVD) 
-% o tolleranze manuali per evitare falsi positivi da malcondizionamento.
-rank_ctrb = rank(ctrb(Aa,Ba), 1e-10); % Tolleranza forzata per ignorare lo scaling
-
-fprintf('\nTest di controllabilità: il sistema possiede %d stati.\n', size(Aa,1));
-disp('Nota: se il rango di ctrb sembra inferiore, è dovuto al malcondizionamento');
-disp('generato da poli lenti (0 rad/s) e poli veloci (attuatori a 30 rad/s).');
-disp('La reale stabilizzabilità è garantita dal successo del comando lqr().');
-
-fprintf('\nControllabilita: %d/%d\n',...
-    rank_ctrb,size(Aa,1));
-
-
-if rank_ctrb ~= size(Aa,1)
-    warning('Sistema aumentato non completamente controllabile')
-end
-eig(Aa)
-Co = ctrb(Aa,Ba);
-
-[U,S,Vsvd]=svd(Co);
-
-disp('Singular values controllabilità:')
-disp(diag(S))
-
-
-%% -------------------------------------------------
-% 7) Verifica osservabilità
-% --------------------------------------------------
-
-rank_obs = rank(obsv(A_ext,C_ext));
-
-fprintf('Osservabilita: %d/%d\n',...
-    rank_obs,size(A_ext,1));
-
-
-if rank_obs ~= size(A_ext,1)
-    warning('Sistema non completamente osservabile')
+if osservabile
+    disp('Il modello esteso è COMPLETAMENTE OSSERVABILE (PBH).');
+else
+    warning('Il modello esteso NON è completamente osservabile (PBH).');
 end
 
 %% -------------------------------------------------
 % 8) Pesi LQR
 %
 % Stato:
-% x = [elicottero(4); attuatori(4)]
+% x = [elicottero(4); attuatori(6)]
+%
+% [alpha, alphadot, beta, betadot,
+%  act1_1, act1_2, act1_pade,
+%  act2_1, act2_2, act2_pade]
 %
 % --------------------------------------------------
 % =================================================================
@@ -133,7 +145,8 @@ end
 % =================================================================
 
 Q_heli = diag([400 20 100 500]);
-Q_act  = diag([5, 0.5, 5, 0.5]);
+Q_act = diag([5, 0.5, 1, ...
+              5, 0.5, 1]);
 Q_int = diag([150 800]);
 Q_lqr = blkdiag(Q_heli,Q_act,Q_int);
 
@@ -144,7 +157,7 @@ R_lqr  = diag([1 1]);
 % --------------------------------------------------
 
 K_aug = lqr(Aa, Ba, Q_lqr, R_lqr);
-Krp = K_aug(:, 1:n_ext);    % 2x8
+Krp = K_aug(:, 1:n_ext);    % 2x10
 Kri = K_aug(:, n_ext+1:end); % 2x2
 
 umax = 5; % esempio Nm
@@ -183,8 +196,8 @@ disp('Filtro Kalman calcolato')
 
 
 %% -------------------------------------------------
-% 11) Costruzione controllore LQG 2DOF con integratore su alfa
-% -------------------------------------------------
+% 11) Costruzione controllore LQG 2DOF con integratore su alfa e beta
+% --------------------------------------------------
 
 ni = size(C_int,1);
 
@@ -240,8 +253,10 @@ K_lqg_int.OutputName = {
     'betadot_hat'
     'act1_hat'
     'act1dot_hat'
+    'act1_pade_hat'
     'act2_hat'
     'act2dot_hat'
+    'act2_pade_hat'
 };
 
 save('LQG_Controllers.mat','K_lqg_int','-append');
@@ -290,8 +305,8 @@ CL_nom = connect(Pnom,K_ctrl,...
 
 C_monitor = [
     C_ext;
-    1 0 0 0 0 0 0 0;
-    0 0 1 0 0 0 0 0
+    1 0 0 0 0 0 0 0 0 0;
+    0 0 1 0 0 0 0 0 0 0
 ];
 
 D_monitor = zeros(5,2);
@@ -346,7 +361,7 @@ end
 figure
 pzmap(CL_nom)
 grid on
-title('Poli Closed Loop LQG')
+title('Poli e zeri Closed Loop LQG')
 
 
 % Risposta al gradino
@@ -464,5 +479,4 @@ fprintf('RMS beta            = %.6g rad\n',beta_rms)
 size(Aa)
 size(Ba)
 size(K_aug)
-rank(ctrb(Aa,Ba))
 eig(Aa-Ba*K_aug)

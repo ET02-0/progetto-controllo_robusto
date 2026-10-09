@@ -55,104 +55,303 @@ end
 
 load('HINF_workspace.mat', ...
      'Du', ...
-     'Dy', ...
      'Du_inv', ...
      'Dy_inv');
 
 rng(10);
+
 %% ========================================================================
-% 1. ATTUATORI NOMINALI E INCERTI
+% 1. ATTUATORI NOMINALI
 % ========================================================================
 
 G1_nom = G_act_nom;
 G2_nom = G_act_nom;
 
-G1_unc_param = G_actuator_unc;
-G2_unc_param = G_actuator_unc;
 
 %% ========================================================================
-% 2. CAMPIONAMENTO DELL'INCERTEZZA PARAMETRICA
+% 2. INVILUPPO DETERMINISTICO DELL'INCERTEZZA COMPLESSIVA
 % ========================================================================
 
-Nsample = 200;
-
-G1_samples = usample( ...
-    G1_unc_param, ...
-    Nsample);
-
-G2_samples = usample( ...
-    G2_unc_param, ...
-    Nsample);
-
-fprintf('\nCampionati generati per ciascun attuatore: %d\n',Nsample);
-
-%% ========================================================================
-% 3. FIT DELL'INCERTEZZA MOLTIPLICATIVA
-% ========================================================================
-
-% Ordine del peso dinamico che ricopre l'errore relativo.
-
-OrderWt = 2;
-
-[~,info1] = ucover( ...
-    G1_samples, ...
-    G1_nom, ...
-    OrderWt, ...
-    'InputMult');
-
-[~,info2] = ucover( ...
-    G2_samples, ...
-    G2_nom, ...
-    OrderWt, ...
-    'InputMult');
-
-WI1 = minreal( ...
-    tf(info1.W1), ...
-    1e-7);
-
-WI2 = minreal( ...
-    tf(info2.W1), ...
-    1e-7);
-
-fprintf('\n============================================================\n');
-fprintf(' PESI DI INCERTEZZA MOLTIPLICATIVA\n');
-fprintf('============================================================\n');
-
-disp('WI1 =');
-WI1
-
-disp('WI2 =');
-WI2
-
-%% ========================================================================
-% 4. VERIFICA DEL COVER
-% ========================================================================
+% Questa procedura comprende:
+%   - omega_n variabile di +/-10%
+%   - tau_d variabile di +/-20%
+%   - intero contributo W_Pade*Delta_Pade
+%
+% Non utilizziamo usample per costruire il peso.
 
 omega = logspace(-1,3,500);
+jw = 1i*omega(:);
 
-Rel1 = ...
-    (G1_samples - G1_nom) / G1_nom;
+% Griglie dei parametri per la costruzione dell'inviluppo
+wn_vec = linspace( ...
+    0.90*omega_n, ...
+    1.10*omega_n, ...
+    17);
 
-Rel2 = ...
-    (G2_samples - G2_nom) / G2_nom;
+tau_vec = linspace( ...
+    0.80*tau_d_nom, ...
+    1.20*tau_d_nom, ...
+    41);
 
-figure('Name','Attuatore 1 - Incertezza moltiplicativa');
-sigma(Rel1,omega);
+% Risposte nominali e modulo del peso Padé
+Gnom_resp = squeeze( ...
+    freqresp(G_act_nom,omega));
+Gnom_resp = Gnom_resp(:);
+
+Wp_abs = squeeze( ...
+    abs(freqresp(W_Pade,omega)));
+Wp_abs = Wp_abs(:);
+
+% Inviluppo dell'errore relativo comprensivo di Delta_Pade
+Ngrid = numel(wn_vec)*numel(tau_vec);
+E_grid = zeros(numel(omega),Ngrid);
+
+idx = 0;
+
+for iwn = 1:numel(wn_vec)
+
+    wn = wn_vec(iwn);
+
+    G2nd_resp = ...
+        wn^2 ./ ...
+        (jw.^2 + 2*zeta*wn*jw + wn^2);
+
+    for itau = 1:numel(tau_vec)
+
+        tau = tau_vec(itau);
+
+        % Padé del primo ordine per il parametro tau
+        Gpade_resp = ...
+            (1 - tau*jw/2) ./ ...
+            (1 + tau*jw/2);
+
+        % Rapporto tra attuatore parametrico e nominale
+        R = ...
+            (G2nd_resp.*Gpade_resp) ./ Gnom_resp;
+
+        idx = idx + 1;
+
+        % Bound:
+        % |R*(1+W_Pade*Delta_Pade)-1|
+        % <= |R-1| + |R|*|W_Pade|
+        E_grid(:,idx) = ...
+            abs(R-1) + abs(R).*Wp_abs;
+
+    end
+
+end
+
+% Massimo sulle combinazioni dei parametri
+E_env = max(E_grid,[],2);
+
+fprintf('\n============================================================\n');
+fprintf(' INVILUPPO DETERMINISTICO ATTUATORI\n');
+fprintf('============================================================\n');
+
+fprintf('Combinazioni parametriche analizzate: %d\n',Ngrid);
+
+fprintf('Massimo inviluppo = %.6f\n',max(E_env));
+
+
+%% ========================================================================
+% 3. FIT DEL PESO MOLTIPLICATIVO COMUNE
+% ========================================================================
+
+% Margine per il fitting e per la discretizzazione delle griglie.
+% Il risultato sarà comunque sottoposto a validazione indipendente.
+
+Margine_WI = 1.10;
+
+E_fit = max( ...
+    Margine_WI*E_env, ...
+    1e-8);
+
+E_fit_frd = frd( ...
+    reshape(E_fit,1,1,[]), ...
+    omega);
+
+OrderWt = 4;
+
+% Vincolo esplicito: |WI| >= inviluppo maggiorato
+Cfit = struct();
+Cfit.LowerBound = E_fit_frd;
+Cfit.UpperBound = Inf;
+
+WI_fit = fitmagfrd( ...
+    E_fit_frd, ...
+    OrderWt, ...
+    [], ...
+    [], ...
+    Cfit);
+
+WI = minreal( ...
+    tf(WI_fit), ...
+    1e-7);
+
+% Stessa famiglia fisica per i due attuatori.
+% Le incertezze Delta finali resteranno indipendenti.
+WI1 = WI;
+WI2 = WI;
+
+fprintf('\n============================================================\n');
+fprintf(' PESO DI INCERTEZZA LUMPED\n');
+fprintf('============================================================\n');
+
+disp('WI1 = WI');
+WI1
+
+disp('WI2 = WI');
+WI2
+
+
+%% ========================================================================
+% 4. VERIFICA DEL COVER SULLA GRIGLIA DI FIT
+% ========================================================================
+
+mag_WI = squeeze( ...
+    abs(freqresp(WI,omega)));
+mag_WI = mag_WI(:);
+
+ratio_fit = E_env./mag_WI;
+
+fprintf('\n============================================================\n');
+fprintf(' VERIFICA COVER SULLA GRIGLIA DI FIT\n');
+fprintf('============================================================\n');
+
+fprintf('Massimo rapporto inviluppo/WI = %.6f\n', ...
+    max(ratio_fit));
+
+fprintf('Frequenze oltre il cover = %d / %d\n', ...
+    sum(ratio_fit > 1),numel(omega));
+
+figure('Name','Cover deterministico attuatori');
+
+semilogx( ...
+    omega, ...
+    E_env, ...
+    'LineWidth',1.5);
+
 hold on;
-sigma(WI1,omega);
-grid on;
-title( ...
-    'Attuatore 1: errore relativo e peso W_{I,1}(j\omega)', ...
-    'Interpreter','tex');
 
-figure('Name','Attuatore 2 - Incertezza moltiplicativa');
-sigma(Rel2,omega);
-hold on;
-sigma(WI2,omega);
+semilogx( ...
+    omega, ...
+    mag_WI, ...
+    'LineWidth',1.5);
+
 grid on;
-title( ...
-    'Attuatore 2: errore relativo e peso W_{I,2}(j\omega)', ...
-    'Interpreter','tex');
+
+xlabel('\omega [rad/s]');
+ylabel('Modulo');
+
+title('Inviluppo completo dell''incertezza e peso lumped');
+
+legend( ...
+    'Inviluppo errore relativo', ...
+    '|W_I|', ...
+    'Location','best');
+
+
+%% ========================================================================
+% 4.1 VALIDAZIONE SU GRIGLIA PIU' DENSA DEI PARAMETRI
+% ========================================================================
+
+omega_val = logspace(-1,3,1000);
+jw_val = 1i*omega_val(:);
+
+wn_val = linspace( ...
+    0.90*omega_n, ...
+    1.10*omega_n, ...
+    31);
+
+tau_val = linspace( ...
+    0.80*tau_d_nom, ...
+    1.20*tau_d_nom, ...
+    61);
+
+Gnom_val = squeeze( ...
+    freqresp(G_act_nom,omega_val));
+Gnom_val = Gnom_val(:);
+
+Wp_abs_val = squeeze( ...
+    abs(freqresp(W_Pade,omega_val)));
+Wp_abs_val = Wp_abs_val(:);
+
+mag_WI_val = squeeze( ...
+    abs(freqresp(WI,omega_val)));
+mag_WI_val = mag_WI_val(:);
+
+E_env_val = zeros(numel(omega_val),1);
+
+for iwn = 1:numel(wn_val)
+
+    wn = wn_val(iwn);
+
+    G2nd_resp = ...
+        wn^2 ./ ...
+        (jw_val.^2 + 2*zeta*wn*jw_val + wn^2);
+
+    for itau = 1:numel(tau_val)
+
+        tau = tau_val(itau);
+
+        Gpade_resp = ...
+            (1 - tau*jw_val/2) ./ ...
+            (1 + tau*jw_val/2);
+
+        R = ...
+            (G2nd_resp.*Gpade_resp) ./ Gnom_val;
+
+        E_candidate = ...
+            abs(R-1) + abs(R).*Wp_abs_val;
+
+        E_env_val = max( ...
+            E_env_val, ...
+            E_candidate);
+
+    end
+
+end
+
+ratio_val = E_env_val./mag_WI_val;
+
+fprintf('\n============================================================\n');
+fprintf(' VALIDAZIONE SU GRIGLIA DENSA\n');
+fprintf('============================================================\n');
+
+fprintf('Coppie parametriche di validazione: %d\n', ...
+    numel(wn_val)*numel(tau_val));
+
+fprintf('Massimo rapporto inviluppo/WI = %.6f\n', ...
+    max(ratio_val));
+
+fprintf('Frequenze oltre il cover = %d / %d\n', ...
+    sum(ratio_val > 1),numel(omega_val));
+
+figure('Name','Validazione cover lumped');
+
+semilogx( ...
+    omega_val, ...
+    E_env_val, ...
+    'LineWidth',1.5);
+
+hold on;
+
+semilogx( ...
+    omega_val, ...
+    mag_WI_val, ...
+    'LineWidth',1.5);
+
+grid on;
+
+xlabel('\omega [rad/s]');
+ylabel('Modulo');
+
+title('Validazione indipendente del peso lumped');
+
+legend( ...
+    'Inviluppo di validazione', ...
+    '|W_I|', ...
+    'Location','best');
 
 %% ========================================================================
 % 5. COSTRUZIONE DEI BLOCCHI ULTIDYN
@@ -247,7 +446,7 @@ fprintf('INCERTEZZE DOPO LA RIDUZIONE MECCANICA\n');
 fprintf('============================================================\n');
 
 disp(Pmech_reduced.Uncertainty);
-
+P_before = Pmech_reduced;
 %% ========================================================================
 % 7.1 SEMPLIFICAZIONE DELLA RAPPRESENTAZIONE LFT
 % ========================================================================
@@ -282,6 +481,45 @@ for k = 1:numel(blk_mech)
 
 end
 
+P_after = Pmech_reduced;
+D = simplify(P_after - P_before,'full');
+
+norm(D.NominalValue,inf)
+[M1,Delta1] = lftdata(P_before);
+[M2,Delta2] = lftdata(P_after);
+fieldnames(P_before.Uncertainty)
+fieldnames(P_after.Uncertainty)
+
+fprintf('Incertezze PRIMA:\n');
+disp(P_before.Uncertainty)
+
+fprintf('Incertezze DOPO:\n');
+disp(P_after.Uncertainty)
+
+fprintf('Norma differenza nominale:\n');
+Dnom = minreal( ...
+    P_before.NominalValue - P_after.NominalValue, ...
+    1e-8);
+
+fprintf('||Pnom_before-Pnom_after||inf = %.6e\n', ...
+    norm(Dnom,inf));
+
+Ns = 500;
+
+[P_before_s,SampleValues] = usample(P_before,Ns);
+
+P_after_s = usubs(P_after,SampleValues);
+
+err = zeros(Ns,1);
+
+for k = 1:Ns
+    err(k) = norm( ...
+        P_before_s(:,:,k) - P_after_s(:,:,k), ...
+        inf);
+end
+
+fprintf('Max errore sui %d campioni = %.6e\n', ...
+    Ns,max(err));
 %% ========================================================================
 % 8. ESTRAZIONE DELLE USCITE ANGOLARI
 % ========================================================================

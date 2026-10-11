@@ -86,7 +86,61 @@ disp(norm(Gx(:,1:2)-G_scaled, inf));                           % controllo: deve
 
 disp('Normalizzazione completata.');
 
+%% ------------------------------------------------------------------------
+% WS - PESO SULLA SENSIBILITA' S
+% -------------------------------------------------------------------------
 
+weight.Ms_alpha = 2.0;
+weight.Ms_beta  = 2.0;
+
+weight.As_alpha = 0.001;
+weight.As_beta  = 0.0001;
+
+weight.wb_alpha = 2.0;
+weight.wb_beta  = 2.0;
+
+WS_alpha = ...
+    (s/weight.Ms_alpha + weight.wb_alpha) / ...
+    (s + weight.wb_alpha*weight.As_alpha);
+
+WS_beta = ...
+    (s/weight.Ms_beta + weight.wb_beta) / ...
+    (s + weight.wb_beta*weight.As_beta);
+
+WS = blkdiag(WS_alpha, WS_beta);
+
+
+%% ------------------------------------------------------------------------
+% WU - PESO SULLO SFORZO DI CONTROLLO
+% -------------------------------------------------------------------------
+
+WU = ss([], [], [], 0.2*eye(2));
+
+
+%% ------------------------------------------------------------------------
+% WT - PESO SULLA SENSIBILITA' COMPLEMENTARE T
+% -------------------------------------------------------------------------
+
+weight.Mt_alpha = 1.2;
+weight.Mt_beta  = 0.5;
+
+weight.At_alpha = 0.01;
+weight.At_beta  = 0.01;
+
+weight.wt_alpha = 10;
+weight.wt_beta  = 10;
+
+WT_alpha = ...
+    (s + weight.wt_alpha*weight.At_alpha) / ...
+    (s/weight.Mt_alpha + weight.wt_alpha);
+
+WT_beta = ...
+    (s + weight.wt_beta*weight.At_beta) / ...
+    (s/weight.Mt_beta + weight.wt_beta);
+
+WT = blkdiag(WT_alpha, WT_beta);
+
+%{
 %% ========================================================================
 % 4. PESI H-INFINITY COMUNI A TUTTE LE SINTESI
 %
@@ -156,7 +210,7 @@ WT_beta = ...
     (s/weight.Mt_beta + weight.wt_beta);
 
 WT = blkdiag(WT_alpha, WT_beta);
-
+%}
 
 %% ------------------------------------------------------------------------
 % VERIFICA DEI PESI

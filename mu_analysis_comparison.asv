@@ -1,0 +1,609 @@
+%% ========================================================================
+% MU_ANALYSIS_COMPARISON
+%
+% Confronto H-infinity vs mu-synthesis sul modello incerto del progetto.
+% Adattato ai modelli e ai controllori del progetto corrente.
+% ========================================================================
+
+clearvars;
+close all;
+clc;
+
+%% ========================================================================
+% 0. CARICAMENTO DATI
+% ========================================================================
+
+load('HINF_workspace.mat');
+load('HINF_controllers.mat');
+load('ACTUATOR_LUMPED.mat');
+load('MU_controller.mat');
+
+I2 = eye(2);
+
+%% ========================================================================
+% 1. CONTROLLORI DA CONFRONTARE
+% ========================================================================
+
+controllers = {
+    K_mix_scaled
+    K_hinfsyn_scaled
+    K_pidcomp_scaled
+    K_mu_scaled
+};
+
+controllerNames = {
+    'mixsyn'
+    'hinfsyn'
+    'PID+comp'
+    'mu-moltiplicativo-lumped'
+};
+
+
+%% CONTROLLORI MU AGGIUNTIVI GIA SALVATI
+
+% ------------------------------------------------------------
+% MU moltiplicativo sintetizzato direttamente sul non-lumped
+% ------------------------------------------------------------
+
+%% MU NON-LUMPED COLD-START REALE
+
+
+coldFiles = dir('MU_controller_NONLUMPED_COLDSTART_ONLY*.mat');
+
+if isempty(coldFiles)
+    error('Nessun file del cold-start non-lumped trovato.');
+end
+
+[~,idxLatest] = max([coldFiles.datenum]);
+
+coldFile = fullfile( ...
+    coldFiles(idxLatest).folder, ...
+    coldFiles(idxLatest).name);
+
+fprintf('\nCaricamento vero cold-start: %s\n',coldFile);
+
+C = load(coldFile);
+
+if ~isfield(C,'K_mu_scaled_nonlumped')
+    error('K_mu_scaled_nonlumped non trovato nel file cold-start.');
+end
+
+controllers{end+1,1} = C.K_mu_scaled_nonlumped;
+controllerNames{end+1,1} = 'mu-nonlumped-coldstart';
+
+% ------------------------------------------------------------
+% MU additivo lumped, controllore finale minreal
+% ------------------------------------------------------------
+
+A = load('MU_controller_ADDITIVE_15PCT_COLDSTART_MINREAL.mat');
+
+if isfield(A,'K_mu_scaled_additive_minreal')
+    K_add = A.K_mu_scaled_additive_minreal;
+elseif isfield(A,'K_mu_scaled_additive')
+    K_add = A.K_mu_scaled_additive;
+else
+    error(['Controllore additivo non trovato. Campi disponibili: ', ...
+        strjoin(fieldnames(A),', ')]);
+end
+
+controllers{end+1,1} = K_add;
+controllerNames{end+1,1} = 'mu-additivo-lumped-minreal';
+
+% ------------------------------------------------------------
+% MU non-lumped warm-start da mixsyn
+% ------------------------------------------------------------
+
+D = load('MU_DIRECT_FROM_MIXSYN_INIT.mat');
+
+if isfield(D,'K_direct_mixsyn')
+    controllers{end+1,1} = D.K_direct_mixsyn;
+    controllerNames{end+1,1} = 'mu-nonlumped-warmstart-mixsyn';
+else
+    error('K_direct_mixsyn non trovato nel file MAT.');
+end
+
+% ------------------------------------------------------------
+% MU non-lumped validato, file separato
+% ------------------------------------------------------------
+
+D = load('MU_DIRECT_NONLUMPED_VALIDATED.mat');
+
+if isfield(D,'K_mu_scaled_nonlumped')
+    controllers{end+1,1} = D.K_mu_scaled_nonlumped;
+    controllerNames{end+1,1} = ...
+        'mu-nonlumped-warmstart-additivo';
+else
+    warning('Controllore non trovato in MU_DIRECT_NONLUMPED_VALIDATED.mat');
+end
+
+% ------------------------------------------------------------
+% MU moltiplicativo con tau esplicito
+% ------------------------------------------------------------
+
+D_tau = load('MU_controller_TAU_ESPLICITO_RERUN.mat');
+
+if isfield(D_tau,'K_mu_scaled_tau_explicit')
+    controllers{end+1,1} = D_tau.K_mu_scaled_tau_explicit;
+    controllerNames{end+1,1} = 'mu-moltiplicativo-tau-esplicito';
+else
+    error('K_mu_scaled_tau_explicit non trovato nel file.');
+end
+
+Nc = numel(controllers);
+
+% Analizza esclusivamente i controllori 7, 8 e 9
+idxToRun = 7:9;
+
+assert(all(idxToRun >= 1 & idxToRun <= Nc), ...
+    'Indici dei controllori non validi.');
+
+fprintf('\nControllori da analizzare: ');
+fprintf('%d ',idxToRun);
+fprintf('\n');
+
+fprintf('\nControllori da analizzare: %d\n',Nc);
+disp(controllerNames);
+
+%% ========================================================================
+% 2. PIANTE PER L'ANALISI
+% ========================================================================
+
+% Plant nominale per NS e NP
+Gnom = G_scaled;
+
+% Plant incerto non-lumped per RS, RP e analisi mu
+% Incertezze mantenute:
+%   J_alpha, l, omega_n, tau_d
+Gunc = G_unc_mu_scaled;
+
+Gunc.InputName = {
+    'u1'
+    'u2'
+};
+
+Gunc.OutputName = {
+    'y1'
+    'y2'
+};
+
+%% CONFRONTO DEI MODELLI NOMINALI
+
+Gnom_HINF = G_scaled;
+Gnom_nonlumped = Gunc.NominalValue;
+
+err_abs = norm( ...
+    minreal(Gnom_HINF - Gnom_nonlumped,1e-8), inf);
+
+err_rel = err_abs / max(norm(Gnom_nonlumped,inf),eps);
+
+fprintf('\nConfronto dei modelli nominali:\n');
+fprintf('Errore assoluto = %.6e\n',err_abs);
+fprintf('Errore relativo = %.6e\n',err_rel);
+%% ========================================================================
+% 3. GRIGLIA FREQUENZIALE PER ANALISI MU
+% ========================================================================
+
+omegaAnalysis = omegaWeights;
+
+fprintf('\n============================================================\n');
+fprintf('MU ANALYSIS COMPARISON\n');
+fprintf('============================================================\n');
+
+fprintf('Numero frequenze = %d\n', ...
+    numel(omegaAnalysis));
+
+fprintf('Intervallo = %.3e - %.3e rad/s\n', ...
+    min(omegaAnalysis), ...
+    max(omegaAnalysis));
+
+%% ========================================================================
+% 4. OPZIONI WCGain
+% ========================================================================
+
+wcOptsFast = wcOptions;
+
+wcOptsAccurate = wcOptions( ...
+    'MussvOptions','a');
+
+%% ========================================================================
+% 5. PREALLOCAZIONE
+% ========================================================================
+
+NominalGamma = nan(Nc,1);
+
+RS_Lower = nan(Nc,1);
+RS_Upper = nan(Nc,1);
+
+RP_Lower = nan(Nc,1);
+RP_Upper = nan(Nc,1);
+
+MuRS_Lower = nan(Nc,1);
+MuRS_Upper = nan(Nc,1);
+
+MuRP_Lower = nan(Nc,1);
+MuRP_Upper = nan(Nc,1);
+
+NS = false(Nc,1);
+NP = false(Nc,1);
+RS = false(Nc,1);
+RP = false(Nc,1);
+
+%% ========================================================================
+% 6. ANALISI DEI CONTROLLORI
+% ========================================================================
+
+for k = idxToRun
+
+    K = controllers{k};
+
+    fprintf('\n============================================================\n');
+    fprintf('Controller %d/%d: %s\n', ...
+        k,Nc,controllerNames{k});
+    fprintf('============================================================\n');
+
+    %% ====================================================================
+    % 6.1 ANALISI NOMINALE
+    % =====================================================================
+
+    fprintf('\nNominal analysis...\n');
+
+    Lnom = Gnom * K;
+
+    Snom = feedback(I2,Lnom);
+    Tnom = feedback(Lnom,I2);
+
+    Wnom = [
+        WS*Snom
+        WU*K*Snom
+        WT*Tnom
+    ];
+
+    % NP senza riduzione degli stati
+    [gammaNP_raw, fNP_raw] = hinfnorm(Wnom);
+
+    % NP con la riduzione attualmente utilizzata
+    Wnom_minreal = minreal(Wnom,1e-7);
+    [gammaNP_minreal, fNP_minreal] = hinfnorm(Wnom_minreal);
+
+    fprintf('NP senza minreal = %.9f (%.6f rad/s)\n', ...
+        gammaNP_raw,fNP_raw);
+
+    fprintf('NP con minreal   = %.9f (%.6f rad/s)\n', ...
+        gammaNP_minreal,fNP_minreal);
+
+    % Valore provvisorio: verrà confrontato con quello
+    % calcolato sul nominale dello stesso modello usato per RP.
+    NominalGamma(k) = gammaNP_raw;
+
+    NS(k) = ...
+        all(real(pole(Tnom)) < 0);
+
+    NP(k) = ...
+        NominalGamma(k) < 1;
+
+    fprintf('Nominal Gamma = %.6f\n', ...
+        NominalGamma(k));
+
+    fprintf('NS = %d\n',NS(k));
+    fprintf('NP = %d\n',NP(k));
+
+    %% ====================================================================
+    % 6.2 SISTEMA INCERTO
+    % =====================================================================
+
+    Lunc = Gunc * K;
+
+    Sunc = feedback(I2,Lunc);
+    Tunc = feedback(Lunc,I2);
+
+    Wunc = [
+        WS*Sunc
+        WU*K*Sunc
+        WT*Tunc
+    ];
+
+    %% ====================================================================
+    % 6.3 ROBUST STABILITY - ROBUSTSTAB
+    % =====================================================================
+
+    fprintf('\nRunning robstab...\n');
+    
+    [stabMargin, ~] = robstab(Tunc, robOptions('Display','off'));
+    
+    fprintf('\nRobust Stability:\n');
+    fprintf('  Lower bound = %.4f\n', stabMargin.LowerBound);
+    fprintf('  Upper bound = %.4f\n', stabMargin.UpperBound);
+    
+    if stabMargin.LowerBound > 1
+        fprintf(' [PASS] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound);
+    elseif stabMargin.UpperBound < 1
+        fprintf(' [FAIL] Robust Stability (RS) - Margin = %.2f\n', stabMargin.LowerBound);
+    else
+        fprintf('  [INCONCLUSIVE] Intervallo di bound non conclusivo.\n');
+    end
+    
+    RS_Lower(k) = stabMargin.LowerBound;
+    RS_Upper(k) = stabMargin.UpperBound;
+    RS(k)       = RS_Lower(k) > 1;
+
+    %% ====================================================================
+    % 6.4 ROBUST PERFORMANCE - WCGain
+    % =====================================================================
+
+    fprintf('\nRunning wcgain...\n');
+   
+    Kloop = ss(K);
+    Kloop.InputName  = {'e1','e2'};
+    Kloop.OutputName = {'u1','u2'};
+    
+    W_S = ss(WS);
+    W_S.InputName  = {'e1','e2'};
+    W_S.OutputName = {'zS1','zS2'};
+    
+    W_U = ss(WU);
+    W_U.InputName  = {'u1','u2'};
+    W_U.OutputName = {'zU1','zU2'};
+    
+    W_T = ss(WT);
+    W_T.InputName  = {'y1','y2'};
+    W_T.OutputName = {'zT1','zT2'};
+    
+    sum1 = sumblk('e1 = r1 - y1');
+    sum2 = sumblk('e2 = r2 - y2');
+    
+    CL_unc = connect(Gunc, Kloop, W_S, W_U, W_T, sum1, sum2, ...
+        {'r1','r2'}, {'zS1','zS2','zU1','zU2','zT1','zT2'});
+
+    Wunc_nom = Wunc.NominalValue;
+    CLunc_nom = CL_unc.NominalValue;
+
+    errMap = norm( ...
+        minreal(Wunc_nom-CLunc_nom,1e-8),inf);
+
+    fprintf('Errore tra mappe nominali Wunc e CL_unc: %.6e\n', ...
+        errMap);
+    
+    [wcGain, wcuRP] = wcgain(CL_unc, ...
+        wcOptions('Display','off','MussvOptions','a'));
+    
+    fprintf('\nRobust Performance:\n');
+    fprintf('  Lower bound = %.4f\n', wcGain.LowerBound);
+    fprintf('  Upper bound = %.4f\n', wcGain.UpperBound);
+    
+    if wcGain.UpperBound < 1
+        fprintf('  [PASS] Robust performance garantita.\n');
+    elseif wcGain.LowerBound > 1
+        fprintf('  [FAIL] Robust performance sicuramente violata.\n');
+    else
+        fprintf('  [INCONCLUSIVE] Bound non conclusivi.\n');
+    end
+    
+    RP_Lower(k) = wcGain.LowerBound;
+    RP_Upper(k) = wcGain.UpperBound;
+    RP(k)       = RP_Upper(k) < 1;
+
+    
+    %% ====================================================================
+    % 6.5 DECOMPOSIZIONE LFT PER RS E RP
+    % =====================================================================
+    
+    fprintf('\nExtracting LFT data...\n');
+    
+    % LFT del sistema di anello chiuso per robust stability
+    [M_RS,Delta_RS,BlockStructure_RS] = lftdata(Tunc);
+    
+    % LFT della mappa delle prestazioni per robust performance
+    [M_RP,Delta_RP,BlockStructure_unc_RP] = lftdata(Wunc);
+    
+    % Dimensioni della mappa delle prestazioni
+    nExogenous = size(Wunc,2);
+    nPerformance = size(Wunc,1);
+    
+    fprintf('\n--- CHECK LFT ROBUST PERFORMANCE ---\n');
+    
+    fprintf('Wunc: %d outputs, %d inputs\n', ...
+        nPerformance,nExogenous);
+    
+    fprintf('M_RP: %d outputs, %d inputs\n', ...
+        size(M_RP,1),size(M_RP,2));
+    
+    fprintf('Delta_RP: %d x %d\n', ...
+        size(Delta_RP,1),size(Delta_RP,2));
+    
+    fprintf('Performance block atteso: %d x %d\n', ...
+        nExogenous,nPerformance);
+    
+    % Verifica dimensionale della decomposizione LFT di Wunc
+    assert(size(M_RP,1)-size(Delta_RP,2)==nPerformance, ...
+        'Dimensione delle righe della LFT RP non coerente.');
+    
+    assert(size(M_RP,2)-size(Delta_RP,1)==nExogenous, ...
+        'Dimensione delle colonne della LFT RP non coerente.');
+    
+    
+    %% ====================================================================
+    % 6.6 MU ESPLICITA - ROBUST STABILITY
+    % =====================================================================
+    
+    % Estrazione della sottomatrice M11 associata all'incertezza
+    szDeltaRS = size(Delta_RS);
+    
+    M11_RS = M_RS( ...
+        1:szDeltaRS(2), ...
+        1:szDeltaRS(1));
+    
+    fprintf('\nRunning explicit mu RS on %d frequencies...\n', ...
+        numel(omegaAnalysis));
+    
+    tic;
+    
+    muRS = mussv( ...
+        frd(M11_RS,omegaAnalysis), ...
+        BlockStructure_RS, ...
+        's');
+    
+    elapsedMuRS = toc;
+    
+    fprintf('mu RS completed in %.2f s.\n', ...
+        elapsedMuRS);
+    
+    muRSup = squeeze(muRS.ResponseData(1,1,:));
+    muRSlo = squeeze(muRS.ResponseData(1,2,:));
+    
+    MuRS_Upper(k) = max(muRSup);
+    MuRS_Lower(k) = max(muRSlo);
+    
+    
+    %% ====================================================================
+    % 6.7 MU ESPLICITA - ROBUST PERFORMANCE
+    % =====================================================================
+    
+    % Si parte dalla struttura di incertezza restituita
+    % da lftdata(Wunc).
+    BlockStructureRP = BlockStructure_unc_RP;
+    
+    % Aggiunta del blocco fittizio di prestazione.
+    % Il blocco chiude il canale tra le uscite pesate
+    % e gli ingressi esogeni della mappa Wunc.
+    
+    perfBlock = BlockStructure_unc_RP(1);
+    
+    perfBlock.Name = 'DeltaPerf';
+    perfBlock.Size = [nExogenous nPerformance];
+    perfBlock.Type = 'ultidyn';
+    perfBlock.Occurrences = 1;
+    perfBlock.Simplify = 0;
+    
+    BlockStructureRP(end+1,1) = perfBlock;
+    
+    fprintf('\nRunning explicit mu RP on %d frequencies...\n', ...
+        numel(omegaAnalysis));
+    
+    tic;
+    
+    muRP = mussv( ...
+        frd(M_RP,omegaAnalysis), ...
+        BlockStructureRP, ...
+        's');
+    
+    elapsedMuRP = toc;
+    
+    fprintf('mu RP completed in %.2f s.\n', ...
+        elapsedMuRP);
+    
+    muRPup = squeeze(muRP.ResponseData(1,1,:));
+    muRPlo = squeeze(muRP.ResponseData(1,2,:));
+    
+    MuRP_Upper(k) = max(muRPup);
+    MuRP_Lower(k) = max(muRPlo);
+
+    %% ====================================================================
+    % 6.8 INFORMAZIONI AGGIUNTIVE NOMINALI
+    % =====================================================================
+
+    [gWS_nom,wWS_nom] = ...
+        hinfnorm( ...
+            minreal(WS*Snom,1e-7));
+
+    [gWU_nom,wWU_nom] = ...
+        hinfnorm( ...
+            minreal(WU*K*Snom,1e-7));
+
+    [gWT_nom,wWT_nom] = ...
+        hinfnorm( ...
+            minreal(WT*Tnom,1e-7));
+
+    fprintf('\nNominal weighted channels:\n');
+
+    fprintf('WS*S  = %.6f at %.6f rad/s\n', ...
+        gWS_nom,wWS_nom);
+
+    fprintf('WU*KS = %.6f at %.6f rad/s\n', ...
+        gWU_nom,wWU_nom);
+
+    fprintf('WT*T  = %.6f at %.6f rad/s\n', ...
+        gWT_nom,wWT_nom);
+
+    %% ====================================================================
+    % 6.9 RISULTATO CONTROLLER
+    % =====================================================================
+
+    fprintf('\nController %s completed.\n', ...
+        controllerNames{k});
+
+    fprintf('Nominal gamma : %.6f\n', ...
+        NominalGamma(k));
+
+    fprintf('RS margin     : [%.6f, %.6f]\n', ...
+        RS_Lower(k), ...
+        RS_Upper(k));
+
+    fprintf('WC gain       : [%.6f, %.6f]\n', ...
+        RP_Lower(k), ...
+        RP_Upper(k));
+
+    fprintf('mu RS         : [%.6f, %.6f]\n', ...
+        MuRS_Lower(k), ...
+        MuRS_Upper(k));
+
+    fprintf('mu RP         : [%.6f, %.6f]\n', ...
+        MuRP_Lower(k), ...
+        MuRP_Upper(k));
+
+end
+
+%% ========================================================================
+% 7. TABELLA RISULTATI
+% ========================================================================
+
+resultsMU = table( ...
+    controllerNames, ...
+    NominalGamma, ...
+    RS_Lower, ...
+    RS_Upper, ...
+    RP_Lower, ...
+    RP_Upper, ...
+    MuRS_Lower, ...
+    MuRS_Upper, ...
+    MuRP_Lower, ...
+    MuRP_Upper, ...
+    NS, ...
+    NP, ...
+    RS, ...
+    RP, ...
+    'VariableNames',{ ...
+        'Controller'
+        'NominalGamma'
+        'RS_Lower'
+        'RS_Upper'
+        'RP_Lower'
+        'RP_Upper'
+        'MuRS_Lower'
+        'MuRS_Upper'
+        'MuRP_Lower'
+        'MuRP_Upper'
+        'NS'
+        'NP'
+        'RS'
+        'RP'
+    });
+
+%% ========================================================================
+% 8. STAMPA RISULTATI
+% ========================================================================
+
+fprintf('\n============================================================\n');
+fprintf('CONFRONTO HINF vs MU-SYNTHESIS\n');
+fprintf('============================================================\n');
+
+disp(resultsMU);
+
+%% ========================================================================
+% 9. SALVATAGGIO
+% ========================================================================
+
+writetable( ...
+    resultsMU, ...
+    'MU_vs_HINF_results.csv');
+
+fprintf('\nRisultati salvati in MU_vs_HINF_results.csv\n');
